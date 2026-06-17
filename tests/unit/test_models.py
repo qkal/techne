@@ -42,6 +42,49 @@ def test_config_rejects_negative_limits() -> None:
         raise AssertionError("negative max_patch_bytes should fail validation")
 
 
+def test_config_rejects_unsafe_secret_redaction_patterns() -> None:
+    try:
+        AgentQualityConfig(secret_redaction_patterns=["(a|aa)+$"])
+    except ValidationError as exc:
+        assert "secret_redaction_patterns" in str(exc)
+    else:
+        raise AssertionError("unsafe secret_redaction_patterns should fail validation")
+
+
+def test_config_rejects_optional_dot_wildcard_secret_redaction_pattern() -> None:
+    try:
+        AgentQualityConfig(secret_redaction_patterns=[r"prefix.?secret"])
+    except ValidationError as exc:
+        assert "secret_redaction_patterns" in str(exc)
+    else:
+        raise AssertionError("optional dot wildcard secret_redaction_patterns should fail")
+
+
+def test_config_rejects_quantified_literal_secret_redaction_patterns() -> None:
+    for pattern in ["a*a*a*b", "a?a?a?a", "sk-[A-Za-z0-9_-]+"]:
+        try:
+            AgentQualityConfig(secret_redaction_patterns=[pattern])
+        except ValidationError as exc:
+            assert "secret_redaction_patterns" in str(exc)
+        else:
+            raise AssertionError(f"{pattern!r} should fail validation")
+
+
+def test_config_accepts_literal_secret_redaction_pattern() -> None:
+    config = AgentQualityConfig(secret_redaction_patterns=["internal-secret-marker"])
+
+    assert config.secret_redaction_patterns == ["internal-secret-marker"]
+
+
+def test_config_rejects_empty_secret_redaction_pattern() -> None:
+    try:
+        AgentQualityConfig(secret_redaction_patterns=[""])
+    except ValidationError as exc:
+        assert "secret_redaction_patterns" in str(exc)
+    else:
+        raise AssertionError("empty secret_redaction_patterns should fail validation")
+
+
 def test_diagnostic_range_is_optional_and_typed() -> None:
     diagnostic = Diagnostic(
         id="ruff-F401-demo",

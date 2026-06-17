@@ -48,17 +48,7 @@ include = ["src", "tests"]
 [tool.agent_quality_mcp]
 default_mode = "standard"
 default_safety_mode = "read_only"
-request_timeout_seconds = 120
-subprocess_timeout_seconds = 30
-max_patch_bytes = 200000
-max_changed_files = 50
-max_changed_file_bytes = 500000
-max_workspace_copy_bytes = 50000000
-max_output_bytes = 20000
-max_diagnostics = 200
 uv_offline = true
-uv_sync_dry_run = false
-preserve_shadow_workspace = false
 workspace_exclusions = [
   ".git",
   ".hg",
@@ -78,8 +68,4 @@ workspace_exclusions = [
   ".nox",
 ]
 secret_file_patterns = [".env", ".env.*", "*.pem", "*.key", "id_rsa", "id_ed25519"]
-secret_redaction_patterns = [
-  "sk-[A-Za-z0-9_-]+",
-  "ghp_[A-Za-z0-9_]+",
-  "(?i)(api[_-]?key|token|secret|password)=\\S+",
-]
+secret_redaction_patterns = []

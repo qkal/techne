@@ -9,6 +9,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+MAX_SECRET_REDACTION_PATTERNS = 32
+MAX_SECRET_REDACTION_PATTERN_LENGTH = 500
+SECRET_REDACTION_LITERAL_METACHARS = frozenset(r"()[]{}|*+?.^$\\")
+
 
 class ValidationMode(StrEnum):
     """Validation depth for validate_patch."""
@@ -106,13 +110,33 @@ class AgentQualityConfig(AgentQualityBaseModel):
     secret_file_patterns: list[str] = Field(
         default_factory=lambda: [".env", ".env.*", "*.pem", "*.key", "id_rsa", "id_ed25519"]
     )
-    secret_redaction_patterns: list[str] = Field(
-        default_factory=lambda: [
-            r"sk-[A-Za-z0-9_-]+",
-            r"ghp_[A-Za-z0-9_]+",
-            r"(?i)(api[_-]?key|token|secret|password)=\S+",
-        ]
-    )
+    secret_redaction_patterns: list[str] = Field(default_factory=list)
+
+    @field_validator("secret_redaction_patterns")
+    @classmethod
+    def validate_secret_redaction_patterns(cls, value: list[str]) -> list[str]:
+        """Keep configured redaction patterns as deterministic literal tokens."""
+
+        if len(value) > MAX_SECRET_REDACTION_PATTERNS:
+            raise ValueError(
+                "secret_redaction_patterns exceeds the maximum count "
+                f"of {MAX_SECRET_REDACTION_PATTERNS}"
+            )
+        for pattern in value:
+            if pattern == "":
+                raise ValueError("secret_redaction_patterns entries must not be empty")
+            if len(pattern) > MAX_SECRET_REDACTION_PATTERN_LENGTH:
+                raise ValueError(
+                    "secret_redaction_patterns entry exceeds the maximum length "
+                    f"of {MAX_SECRET_REDACTION_PATTERN_LENGTH}"
+                )
+            metacharacters = sorted(set(pattern) & SECRET_REDACTION_LITERAL_METACHARS)
+            if metacharacters:
+                raise ValueError(
+                    f"Invalid secret_redaction_patterns entry {pattern!r}: "
+                    f"regex metacharacters are not allowed: {''.join(metacharacters)}"
+                )
+        return value
 
 
 class ValidatePatchRequest(AgentQualityBaseModel):
