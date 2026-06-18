@@ -509,6 +509,72 @@ def test_apply_unified_diff_rejects_rename_only_patch(tmp_path: Path) -> None:
         apply_unified_diff(tmp_path, [Path("pkg/old.py"), Path("pkg/new.py")], patch_text)
 
 
+def test_apply_unified_diff_rejects_mismatched_git_metadata(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        diff --git a/evil.py b/evil.py
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_orphan_index_metadata(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        index 1111111..2222222 100644
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_git_metadata_for_matching_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        diff --git a/pkg/app.py b/pkg/app.py
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_apply_unified_diff_rejects_file_mode_changes(tmp_path: Path) -> None:
     patch_text = dedent(
         """\
@@ -638,7 +704,7 @@ def test_apply_unified_diff_rejects_planned_create_descendant_target(
         """,
     )
 
-    with pytest.raises((PatchApplyError, SecurityError)):
+    with pytest.raises(SecurityError):
         apply_unified_diff(tmp_path, [Path("a"), Path("a/b")], patch_text)
     assert list(tmp_path.iterdir()) == []
 
@@ -659,7 +725,7 @@ def test_apply_unified_diff_rejects_planned_create_ancestor_target(
         """,
     )
 
-    with pytest.raises((PatchApplyError, SecurityError)):
+    with pytest.raises(SecurityError):
         apply_unified_diff(tmp_path, [Path("a/b"), Path("a")], patch_text)
     assert list(tmp_path.iterdir()) == []
 
@@ -707,7 +773,7 @@ def test_apply_unified_diff_rejects_hard_link_target_outside_shadow_root(
         """,
     )
 
-    with pytest.raises((PatchApplyError, SecurityError)):
+    with pytest.raises(SecurityError):
         apply_unified_diff(shadow_root, [Path("pkg/app.py")], patch_text)
     assert outside.read_text(encoding="utf-8") == "value = 1\n"
 
@@ -778,7 +844,7 @@ def test_apply_unified_diff_rejects_existing_case_alias_targets(
         """,
     )
 
-    with pytest.raises((PatchApplyError, SecurityError)):
+    with pytest.raises(SecurityError):
         apply_unified_diff(tmp_path, [Path("pkg/Case.py"), Path("pkg/case.py")], patch_text)
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
@@ -799,7 +865,7 @@ def test_apply_unified_diff_rejects_casefold_colliding_creates(
         """,
     )
 
-    with pytest.raises((PatchApplyError, SecurityError)):
+    with pytest.raises(SecurityError):
         apply_unified_diff(tmp_path, [Path("pkg/Case.py"), Path("pkg/case.py")], patch_text)
     assert not (tmp_path / "pkg" / "Case.py").exists()
     assert not (tmp_path / "pkg" / "case.py").exists()
@@ -826,7 +892,7 @@ def test_apply_unified_diff_rejects_duplicate_patch_targets(tmp_path: Path) -> N
         """,
     )
 
-    with pytest.raises((PatchApplyError, SecurityError)):
+    with pytest.raises(PatchApplyError):
         apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
     assert target.read_text(encoding="utf-8") == "one\ntwo\n"
 

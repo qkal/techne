@@ -21,7 +21,9 @@ HUNK_RE = re.compile(
 _NO_NEWLINE_MARKER = r"\ No newline at end of file"
 _UNSUPPORTED_PREFIXES = (
     "Binary files ",
+    "diff --git ",
     "GIT binary patch",
+    "index ",
     "old mode ",
     "new mode ",
     "deleted file mode ",
@@ -151,7 +153,7 @@ def _parse_patch(patch_text: str) -> list[FilePatch]:
     while index < len(lines):
         line = lines[index]
         _reject_unsupported_line(line)
-        if not line or line.startswith(("diff --git ", "index ")):
+        if not line:
             index += 1
             continue
         if line.startswith("--- "):
