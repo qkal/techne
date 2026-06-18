@@ -148,7 +148,9 @@ def _parse_file_patch(lines: list[str], index: int) -> tuple[FilePatch, int]:
 
     if not hunks:
         raise PatchApplyError("file patch does not contain hunks")
-    return FilePatch(old_path=old_path, new_path=new_path, hunks=hunks), index
+    file_patch = FilePatch(old_path=old_path, new_path=new_path, hunks=hunks)
+    _validate_file_hunk_ranges(file_patch)
+    return file_patch, index
 
 
 def _parse_hunk(lines: list[str], index: int) -> tuple[Hunk, int]:
@@ -161,8 +163,6 @@ def _parse_hunk(lines: list[str], index: int) -> tuple[Hunk, int]:
     old_count = _hunk_count(match.group("old_count"))
     new_start = int(match.group("new_start"))
     new_count = _hunk_count(match.group("new_count"))
-    _validate_hunk_range("old", old_start, old_count)
-    _validate_hunk_range("new", new_start, new_count)
     index += 1
     hunk_lines: list[HunkLine] = []
     old_seen = 0
@@ -208,11 +208,33 @@ def _hunk_count(value: str | None) -> int:
     return int(value)
 
 
-def _validate_hunk_range(side: str, start: int, count: int) -> None:
-    if start == 0 and count == 0:
+def _validate_file_hunk_ranges(file_patch: FilePatch) -> None:
+    for hunk in file_patch.hunks:
+        _validate_hunk_range(
+            "old",
+            hunk.old_start,
+            hunk.old_count,
+            zero_start_allowed=file_patch.old_path is None,
+        )
+        _validate_hunk_range(
+            "new",
+            hunk.new_start,
+            hunk.new_count,
+            zero_start_allowed=file_patch.new_path is None,
+        )
+
+
+def _validate_hunk_range(
+    side: str,
+    start: int,
+    count: int,
+    *,
+    zero_start_allowed: bool,
+) -> None:
+    if start == 0 and count == 0 and zero_start_allowed:
         return
     if start == 0:
-        raise PatchApplyError(f"{side} hunk range start 0 requires count 0")
+        raise PatchApplyError(f"{side} hunk range start 0 is invalid for this file patch")
 
 
 def _remove_trailing_newline(hunk_lines: list[HunkLine]) -> None:
@@ -269,6 +291,8 @@ def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
         if hunk_index < original_index or hunk_index > len(original_lines):
             raise PatchApplyError("hunk starts outside target content")
         patched_lines.extend(original_lines[original_index:hunk_index])
+        if _hunk_new_index(hunk) != len(patched_lines):
+            raise PatchApplyError("hunk new range does not match patched output position")
         original_index = hunk_index
 
         for hunk_line in hunk.lines:
@@ -295,6 +319,16 @@ def _hunk_original_index(hunk: Hunk) -> int:
     if hunk.old_count == 0:
         return hunk.old_start
     return hunk.old_start - 1
+
+
+def _hunk_new_index(hunk: Hunk) -> int:
+    if hunk.new_start == 0:
+        if hunk.new_count != 0:
+            raise PatchApplyError("zero new hunk start requires zero new line count")
+        return 0
+    if hunk.new_count == 0:
+        return hunk.new_start
+    return hunk.new_start - 1
 
 
 def _reject_unsupported_line(line: str) -> None:

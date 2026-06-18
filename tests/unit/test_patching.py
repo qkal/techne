@@ -230,6 +230,47 @@ def test_apply_unified_diff_rejects_invalid_new_side_zero_start(
     assert not (tmp_path / "pkg" / "new.py").exists()
 
 
+def test_apply_unified_diff_rejects_zero_old_range_for_modification(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -0,0 +1 @@
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_new_start_mismatch(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +999 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 @pytest.mark.parametrize("patch_path", ["../x.py", "b/../x.py"])
 def test_apply_unified_diff_rejects_traversal_paths(
     tmp_path: Path,
