@@ -274,12 +274,42 @@ def _looks_like_safe_unified_diff(text: str, cwd: Path, scoped_file_args: list[s
                 break
             if HUNK_HEADER_RE.match(lines[index]) is not None:
                 saw_hunk = True
-            index += 1
+                index += 1
+                if not _consume_valid_hunk_body(lines, index):
+                    return False
+                while index < len(lines) and _is_valid_hunk_body_line(lines[index]):
+                    index += 1
+                continue
+            return False
         if not saw_hunk:
             return False
         saw_file_diff = True
 
     return saw_file_diff
+
+
+def _consume_valid_hunk_body(lines: list[str], start: int) -> bool:
+    index = start
+    saw_body_line = False
+    while index < len(lines):
+        if HUNK_HEADER_RE.match(lines[index]) is not None:
+            return saw_body_line
+        if (
+            lines[index].startswith("--- ")
+            and index + 1 < len(lines)
+            and lines[index + 1].startswith("+++ ")
+        ):
+            return saw_body_line
+        if not _is_valid_hunk_body_line(lines[index]):
+            return False
+        if lines[index][0] in {" ", "+", "-"}:
+            saw_body_line = True
+        index += 1
+    return saw_body_line
+
+
+def _is_valid_hunk_body_line(line: str) -> bool:
+    return line.startswith((" ", "+", "-", "\\"))
 
 
 def _diff_header_path(line: str, prefix: str) -> str | None:

@@ -374,6 +374,74 @@ def test_ruff_adapter_rejects_header_only_safe_fix_preview(tmp_path: Path) -> No
     assert diagnostics[0].code == "invalid_preview"
 
 
+def test_ruff_adapter_rejects_safe_fix_preview_hunk_without_body(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="--- pkg/app.py\n+++ pkg/app.py\n@@ -1 +1 @@\n",
+                exit_code=1,
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert len(records) == 2
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "invalid_preview"
+
+
+def test_ruff_adapter_rejects_safe_fix_preview_invalid_hunk_body(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="--- pkg/app.py\n+++ pkg/app.py\n@@ -1 +1 @@\nthis is not a diff line\n",
+                exit_code=1,
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert len(records) == 2
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "invalid_preview"
+
+
 def test_ruff_adapter_rejects_safe_fix_preview_for_unsafe_paths(tmp_path: Path) -> None:
     _write_changed_file(tmp_path)
     unsafe_diffs = [
