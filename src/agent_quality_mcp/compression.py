@@ -6,7 +6,8 @@ from typing import Any
 
 from agent_quality_mcp.models import AgentQualityConfig, ContextSummary, Diagnostic
 
-DiagnosticKey = tuple[str, str, str, str | None, str]
+RangeKey = tuple[int, int, int, int] | None
+DiagnosticKey = tuple[str, str, str, str | None, str, RangeKey, bool]
 
 
 def compress_diagnostics(
@@ -71,12 +72,25 @@ def _diagnostic_key(diagnostic: Diagnostic) -> DiagnosticKey:
         diagnostic.message,
         diagnostic.file,
         diagnostic.severity.value,
+        _range_key(diagnostic),
+        diagnostic.is_fixable,
+    )
+
+
+def _range_key(diagnostic: Diagnostic) -> RangeKey:
+    if diagnostic.range is None:
+        return None
+    return (
+        diagnostic.range.start_line,
+        diagnostic.range.start_column,
+        diagnostic.range.end_line,
+        diagnostic.range.end_column,
     )
 
 
 def _compressed_group(key: DiagnosticKey, count: int) -> dict[str, Any]:
-    source, code, message, file, severity = key
-    return {
+    source, code, message, file, severity, range_key, is_fixable = key
+    group: dict[str, Any] = {
         "source": source,
         "code": code,
         "message": message,
@@ -84,3 +98,14 @@ def _compressed_group(key: DiagnosticKey, count: int) -> dict[str, Any]:
         "severity": severity,
         "count": count,
     }
+    if range_key is not None:
+        start_line, start_column, end_line, end_column = range_key
+        group["range"] = {
+            "start_line": start_line,
+            "start_column": start_column,
+            "end_line": end_line,
+            "end_column": end_column,
+        }
+    if is_fixable:
+        group["is_fixable"] = True
+    return group

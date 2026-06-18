@@ -37,6 +37,27 @@ def test_diagnostic_from_message_builds_blocking_diagnostic() -> None:
     assert diagnostic.id == repeated.id
 
 
+def test_diagnostic_id_ignores_non_primitive_metadata_for_stability() -> None:
+    first = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="Required tool is missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        metadata={"detail": object()},
+    )
+    second = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="Required tool is missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        metadata={"detail": object()},
+    )
+
+    assert first.id == second.id
+
+
 def test_normalize_ruff_preserves_rule_fixability_and_range() -> None:
     diagnostics = normalize_ruff(
         [
@@ -67,6 +88,11 @@ def test_normalize_ruff_preserves_rule_fixability_and_range() -> None:
     assert diagnostic.range.end_column == 10
 
 
+def test_normalize_ruff_rejects_malformed_top_level_without_crashing() -> None:
+    assert normalize_ruff(None) == []
+    assert normalize_ruff({"not": "ruff-json"}) == []
+
+
 def test_normalize_pyright_error_severity_is_blocking_error() -> None:
     diagnostics = normalize_pyright(
         {
@@ -95,6 +121,11 @@ def test_normalize_pyright_error_severity_is_blocking_error() -> None:
     assert diagnostic.range is not None
     assert diagnostic.range.start_line == 5
     assert diagnostic.range.start_column == 9
+
+
+def test_normalize_pyright_rejects_malformed_top_level_without_crashing() -> None:
+    assert normalize_pyright(None) == []
+    assert normalize_pyright([]) == []
 
 
 def test_compress_diagnostics_deduplicates_non_blockers_and_truncates() -> None:
@@ -178,3 +209,30 @@ def test_compress_diagnostics_preserves_all_blockers_over_limit() -> None:
     assert summary.returned_diagnostics == 2
     assert summary.total_diagnostics == 2
     assert summary.truncated is False
+
+
+def test_compress_diagnostics_preserves_distinct_ranges() -> None:
+    diagnostics = normalize_ruff(
+        [
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/app.py",
+                "location": {"row": 1, "column": 1},
+                "end_location": {"row": 1, "column": 8},
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/app.py",
+                "location": {"row": 3, "column": 1},
+                "end_location": {"row": 3, "column": 8},
+            },
+        ]
+    )
+
+    compressed, summary = compress_diagnostics(diagnostics, AgentQualityConfig())
+
+    assert compressed == diagnostics
+    assert summary.returned_diagnostics == 2
+    assert summary.compressed_groups == []

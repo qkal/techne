@@ -35,10 +35,13 @@ def diagnostic_from_message(
     )
 
 
-def normalize_ruff(raw: list[dict[str, Any]]) -> list[Diagnostic]:
+def normalize_ruff(raw: Any) -> list[Diagnostic]:
     """Normalize Ruff JSON diagnostics into shared response diagnostics."""
 
     diagnostics: list[Diagnostic] = []
+    if not isinstance(raw, list):
+        return diagnostics
+
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -67,10 +70,13 @@ def normalize_ruff(raw: list[dict[str, Any]]) -> list[Diagnostic]:
     return diagnostics
 
 
-def normalize_pyright(raw: dict[str, Any]) -> list[Diagnostic]:
+def normalize_pyright(raw: Any) -> list[Diagnostic]:
     """Normalize Pyright ``--outputjson`` diagnostics into shared diagnostics."""
 
     diagnostics: list[Diagnostic] = []
+    if not isinstance(raw, dict):
+        return diagnostics
+
     raw_diagnostics = raw.get("generalDiagnostics", [])
     if not isinstance(raw_diagnostics, list):
         return diagnostics
@@ -162,11 +168,36 @@ def _stable_diagnostic_id(
         "file": file,
         "range": diagnostic_range.model_dump() if diagnostic_range is not None else None,
         "is_fixable": is_fixable,
-        "metadata": metadata,
+        "metadata": _canonical_metadata(metadata),
     }
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
     return f"{source}-{code}-{digest}"
+
+
+def _canonical_metadata(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list | tuple):
+        return [
+            canonical_item
+            for item in value
+            if (canonical_item := _canonical_metadata(item)) is not _UnsupportedMetadata.VALUE
+        ]
+    if isinstance(value, dict):
+        canonical_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            canonical_item = _canonical_metadata(item)
+            if canonical_item is not _UnsupportedMetadata.VALUE:
+                canonical_dict[key] = canonical_item
+        return canonical_dict
+    return _UnsupportedMetadata.VALUE
+
+
+class _UnsupportedMetadata:
+    VALUE = object()
 
 
 def _coerce_severity(

@@ -56,9 +56,90 @@ def test_build_suggestions_uses_ruff_source_with_file_command() -> None:
 
     suggestions = build_suggestions([ruff, system])
 
-    assert suggestions[0].command == ["ruff", "check", "pkg/app.py"]
+    assert suggestions[0].command == ["ruff", "check", "--", "pkg/app.py"]
     assert suggestions[0].related_diagnostic_ids == [ruff.id]
     for suggestion in suggestions:
         if suggestion.command is not None:
             assert suggestion.command[0] in {"ruff", "pyright", "uv"}
-            assert "rm -rf" not in suggestion.command
+            assert "rm -rf" not in " ".join(suggestion.command)
+
+
+def test_build_suggestions_places_option_like_ruff_paths_after_delimiter() -> None:
+    ruff = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="Unused import",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="--fix",
+    )
+
+    suggestions = build_suggestions([ruff])
+
+    assert suggestions[0].command == ["ruff", "check", "--", "--fix"]
+
+
+def test_build_suggestions_excludes_control_character_paths_from_safe_commands() -> None:
+    newline_path = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="Unused import",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="pkg/\napp.py",
+    )
+    nul_path = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="Unused import",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="pkg/\x00app.py",
+    )
+
+    suggestions = build_suggestions([newline_path, nul_path])
+
+    assert len(suggestions) == 2
+    assert all(suggestion.command is None for suggestion in suggestions)
+    assert all(not suggestion.is_safe_to_run for suggestion in suggestions)
+
+
+def test_build_suggestions_never_includes_diagnostic_messages_in_commands() -> None:
+    ruff = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="--fix && rm -rf /",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="-looks-like-option.py",
+    )
+
+    suggestions = build_suggestions([ruff])
+
+    assert suggestions[0].command == ["ruff", "check", "--", "-looks-like-option.py"]
+    assert all("--fix && rm -rf /" not in arg for arg in suggestions[0].command or [])
+
+
+def test_build_suggestions_groups_duplicate_missing_tool_actions() -> None:
+    first = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="ruff missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        metadata={"tool": "ruff"},
+    )
+    second = diagnostic_from_message(
+        source="system",
+        code="tool_unavailable",
+        message="cannot resolve ruff",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        metadata={"tool": "ruff"},
+    )
+
+    suggestions = build_suggestions([first, second])
+
+    assert len(suggestions) == 1
+    assert suggestions[0].command == ["ruff", "--version"]
+    assert suggestions[0].related_diagnostic_ids == [first.id, second.id]

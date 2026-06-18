@@ -26,18 +26,22 @@ def _ruff_suggestions(diagnostics: list[Diagnostic]) -> list[tuple[int, str, Sug
     grouped = _diagnostics_by_file(diagnostics, source="ruff")
     suggestions: list[tuple[int, str, SuggestedAction]] = []
     for file, related_diagnostics in grouped.items():
-        command = ["ruff", "check", file] if file is not None else ["ruff", "check"]
+        command = _ruff_command(file)
         suggestions.append(
             (
                 SOURCE_ORDER["ruff"],
                 file or "",
                 SuggestedAction(
                     title="Run Ruff check",
-                    description="Run Ruff against the affected Python file.",
+                    description=_command_description(
+                        command,
+                        safe="Run Ruff against the affected Python file.",
+                        unsafe="Review the Ruff diagnostic path before running commands.",
+                    ),
                     priority=2,
                     related_diagnostic_ids=[diagnostic.id for diagnostic in related_diagnostics],
                     command=command,
-                    is_safe_to_run=True,
+                    is_safe_to_run=command is not None,
                 ),
             )
         )
@@ -48,18 +52,22 @@ def _pyright_suggestions(diagnostics: list[Diagnostic]) -> list[tuple[int, str, 
     grouped = _diagnostics_by_file(diagnostics, source="pyright")
     suggestions: list[tuple[int, str, SuggestedAction]] = []
     for file, related_diagnostics in grouped.items():
-        command = ["pyright", file] if file is not None else ["pyright"]
+        command = _pyright_command(file)
         suggestions.append(
             (
                 SOURCE_ORDER["pyright"],
                 file or "",
                 SuggestedAction(
                     title="Run Pyright",
-                    description="Run Pyright type checking for the affected target.",
+                    description=_command_description(
+                        command,
+                        safe="Run Pyright type checking for the affected target.",
+                        unsafe="Review the Pyright diagnostic path before running commands.",
+                    ),
                     priority=1,
                     related_diagnostic_ids=[diagnostic.id for diagnostic in related_diagnostics],
                     command=command,
-                    is_safe_to_run=True,
+                    is_safe_to_run=command is not None,
                 ),
             )
         )
@@ -90,6 +98,7 @@ def _missing_tool_suggestions(
     diagnostics: list[Diagnostic],
 ) -> list[tuple[int, str, SuggestedAction]]:
     suggestions: list[tuple[int, str, SuggestedAction]] = []
+    diagnostics_by_tool: dict[str, list[Diagnostic]] = defaultdict(list)
     for diagnostic in diagnostics:
         if (
             diagnostic.source != "system"
@@ -99,6 +108,10 @@ def _missing_tool_suggestions(
         tool = diagnostic.metadata.get("tool")
         if not isinstance(tool, str) or tool not in ALLOWED_COMMANDS:
             continue
+        diagnostics_by_tool[tool].append(diagnostic)
+
+    for tool in sorted(diagnostics_by_tool):
+        related_diagnostics = diagnostics_by_tool[tool]
         suggestions.append(
             (
                 SOURCE_ORDER["system"],
@@ -107,7 +120,7 @@ def _missing_tool_suggestions(
                     title=f"Check {tool} availability",
                     description="Verify that the expected quality tool is available on PATH.",
                     priority=1,
-                    related_diagnostic_ids=[diagnostic.id],
+                    related_diagnostic_ids=_unique_ids(related_diagnostics),
                     command=[tool, "--version"],
                     is_safe_to_run=True,
                 ),
@@ -126,3 +139,42 @@ def _diagnostics_by_file(
         if diagnostic.source == source:
             grouped[diagnostic.file].append(diagnostic)
     return dict(grouped)
+
+
+def _ruff_command(file: str | None) -> list[str] | None:
+    if file is None:
+        return ["ruff", "check"]
+    if not _has_safe_command_path_characters(file):
+        return None
+    return ["ruff", "check", "--", file]
+
+
+def _pyright_command(file: str | None) -> list[str] | None:
+    if file is None:
+        return ["pyright"]
+    if not _has_safe_command_path_characters(file) or file.startswith("-"):
+        return None
+    return ["pyright", file]
+
+
+def _has_safe_command_path_characters(file: str) -> bool:
+    if file == "":
+        return False
+    return all(character.isprintable() for character in file)
+
+
+def _command_description(command: list[str] | None, *, safe: str, unsafe: str) -> str:
+    if command is None:
+        return unsafe
+    return safe
+
+
+def _unique_ids(diagnostics: list[Diagnostic]) -> list[str]:
+    unique_ids: list[str] = []
+    seen: set[str] = set()
+    for diagnostic in diagnostics:
+        if diagnostic.id in seen:
+            continue
+        seen.add(diagnostic.id)
+        unique_ids.append(diagnostic.id)
+    return unique_ids
