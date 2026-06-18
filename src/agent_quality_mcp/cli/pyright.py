@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.diagnostics import diagnostic_from_message, normalize_pyright
-from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
+from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
@@ -47,7 +47,7 @@ class PyrightAdapter:
 
         try:
             result = self.runner.run_with_output("pyright", ["--outputjson", *file_args], cwd)
-        except ToolUnavailableError as exc:
+        except CommandExecutionError as exc:
             diagnostics.append(_tool_unavailable("pyright", exc))
             return diagnostics, records
         record = result.record
@@ -181,7 +181,7 @@ def _invalid_json(exc: JSONDecodeError | None) -> Diagnostic:
     )
 
 
-def _tool_unavailable(tool: str, exc: ToolUnavailableError) -> Diagnostic:
+def _tool_unavailable(tool: str, exc: CommandExecutionError) -> Diagnostic:
     return diagnostic_from_message(
         source="system",
         code="tool_unavailable",

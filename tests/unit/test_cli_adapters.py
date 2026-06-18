@@ -7,7 +7,7 @@ from agent_quality_mcp.cli.pyright import PyrightAdapter
 from agent_quality_mcp.cli.ruff import RuffAdapter
 from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.cli.uv import UvAdapter
-from agent_quality_mcp.exceptions import ToolUnavailableError
+from agent_quality_mcp.exceptions import CommandExecutionError, ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandExecutionRecord, DiagnosticSeverity
 
 
@@ -18,11 +18,13 @@ class StubRunner:
         *,
         config: AgentQualityConfig | None = None,
         unavailable: str | None = None,
+        failures: list[Exception | None] | None = None,
     ) -> None:
         self.config = config or AgentQualityConfig()
         self.records = [_as_result(record) for record in records or []]
         self.calls: list[tuple[str, list[str], Path]] = []
         self.unavailable = unavailable
+        self.failures = list(failures or [])
 
     def run(self, command: str, args: list[str], cwd: Path) -> CommandExecutionRecord:
         return self.run_with_output(command, args, cwd).record
@@ -31,6 +33,10 @@ class StubRunner:
         self.calls.append((command, args, cwd))
         if self.unavailable is not None:
             raise ToolUnavailableError(self.unavailable)
+        if self.failures:
+            failure = self.failures.pop(0)
+            if failure is not None:
+                raise failure
         return self.records.pop(0)
 
 
@@ -104,7 +110,7 @@ def test_ruff_adapter_parses_json_and_returns_diagnostics_records_and_safe_fixes
             }
         ]
     )
-    diff = "--- pkg/app.py\n+++ pkg/app.py\n@@\n-import os\n"
+    diff = "--- pkg/app.py\n+++ pkg/app.py\n@@ -1 +0,0 @@\n-import os\n"
     runner = StubRunner(
         [
             _record(
@@ -332,6 +338,151 @@ def test_ruff_adapter_rejects_failed_non_diff_safe_fix_preview(tmp_path: Path) -
     assert diagnostics[0].source == "ruff"
     assert diagnostics[0].severity == DiagnosticSeverity.WARNING
     assert diagnostics[0].code == "invalid_preview"
+
+
+def test_ruff_adapter_rejects_header_only_safe_fix_preview(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="--- pkg/app.py\n+++ pkg/app.py\n",
+                exit_code=1,
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert len(records) == 2
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "invalid_preview"
+
+
+def test_ruff_adapter_rejects_safe_fix_preview_for_unsafe_paths(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
+    unsafe_diffs = [
+        "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-old\n+new\n",
+        "--- ../outside.py\n+++ ../outside.py\n@@ -1 +1 @@\n-old\n+new\n",
+    ]
+
+    for diff in unsafe_diffs:
+        runner = StubRunner(
+            [
+                _record(
+                    "ruff",
+                    ["check", "--no-cache", "--output-format", "json"],
+                    tmp_path,
+                    stdout="[]",
+                ),
+                _record(
+                    "ruff",
+                    ["check", "--no-cache", "--fix", "--diff"],
+                    tmp_path,
+                    stdout=diff,
+                    exit_code=1,
+                ),
+            ]
+        )
+
+        diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+            tmp_path,
+            [],
+            "strict",
+            preview_safe_fixes=True,
+        )
+
+        assert len(records) == 2
+        assert safe_fixes == []
+        assert diagnostics[0].source == "ruff"
+        assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+        assert diagnostics[0].code == "invalid_preview"
+
+
+def test_ruff_adapter_rejects_safe_fix_preview_outside_scoped_files(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path, "pkg/app.py")
+    _write_changed_file(tmp_path, "pkg/other.py")
+    diff = "--- pkg/other.py\n+++ pkg/other.py\n@@ -1 +1 @@\n-old\n+new\n"
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout=diff,
+                exit_code=1,
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert len(records) == 2
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "invalid_preview"
+
+
+def test_ruff_adapter_converts_command_execution_error_to_warning_and_keeps_records(
+    tmp_path: Path,
+) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            )
+        ],
+        failures=[None, CommandExecutionError("Configured path for ruff does not exist")],
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert runner.calls == [
+        ("ruff", ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"], tmp_path),
+        ("ruff", ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"], tmp_path),
+    ]
+    assert len(records) == 1
+    assert safe_fixes == []
+    assert diagnostics[0].source == "system"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "tool_unavailable"
+    assert diagnostics[0].metadata == {"tool": "ruff"}
 
 
 def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
@@ -800,6 +951,23 @@ def test_pyright_adapter_reports_invalid_json_as_warning_with_records(tmp_path: 
     assert diagnostics[0].code == "invalid_json"
 
 
+def test_pyright_adapter_converts_command_execution_error_to_warning(
+    tmp_path: Path,
+) -> None:
+    runner = StubRunner(
+        failures=[CommandExecutionError("Configured path for pyright must be executable")]
+    )
+
+    diagnostics, records = PyrightAdapter(runner).check(tmp_path, [], "standard")
+
+    assert runner.calls == [("pyright", ["--outputjson"], tmp_path)]
+    assert records == []
+    assert diagnostics[0].source == "system"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "tool_unavailable"
+    assert diagnostics[0].metadata == {"tool": "pyright"}
+
+
 def test_uv_adapter_runs_version_and_lock_check_for_standard_mode_with_pyproject(
     tmp_path: Path,
 ) -> None:
@@ -841,3 +1009,25 @@ def test_uv_adapter_runs_sync_locked_dry_run_when_configured(tmp_path: Path) -> 
         ("uv", ["lock", "--check"], tmp_path),
         ("uv", ["sync", "--locked", "--dry-run"], tmp_path),
     ]
+
+
+def test_uv_adapter_converts_command_execution_error_to_warning_and_keeps_records(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    runner = StubRunner(
+        [_record("uv", ["--version"], tmp_path, stdout="uv 0.8.0\n")],
+        failures=[None, CommandExecutionError("Configured path for uv must be absolute")],
+    )
+
+    diagnostics, records = UvAdapter(runner).check(tmp_path, "standard")
+
+    assert runner.calls == [
+        ("uv", ["--version"], tmp_path),
+        ("uv", ["lock", "--check"], tmp_path),
+    ]
+    assert len(records) == 1
+    assert diagnostics[0].source == "system"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "tool_unavailable"
+    assert diagnostics[0].metadata == {"tool": "uv"}

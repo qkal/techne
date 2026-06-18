@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Protocol
 
 from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.diagnostics import DiagnosticSource, diagnostic_from_message, normalize_ruff
-from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
+from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
@@ -18,6 +19,8 @@ from agent_quality_mcp.models import (
     SafeFixPreview,
 )
 from agent_quality_mcp.paths import validate_changed_files
+
+HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$")
 
 
 class Runner(Protocol):
@@ -58,7 +61,7 @@ class RuffAdapter:
         ]
         try:
             result = self.runner.run_with_output("ruff", args, cwd)
-        except ToolUnavailableError as exc:
+        except CommandExecutionError as exc:
             diagnostics.append(_tool_unavailable("ruff", exc))
             return diagnostics, records, safe_fixes
         record = result.record
@@ -77,7 +80,7 @@ class RuffAdapter:
             ]
             try:
                 fix_result = self.runner.run_with_output("ruff", fix_args, cwd)
-            except ToolUnavailableError as exc:
+            except CommandExecutionError as exc:
                 diagnostics.append(_tool_unavailable("ruff", exc))
                 return diagnostics, records, safe_fixes
             fix_record = fix_result.record
@@ -88,6 +91,8 @@ class RuffAdapter:
             if fix_record.stdout_preview and _is_valid_safe_fix_preview(
                 fix_result.stdout,
                 fix_record,
+                cwd,
+                file_args,
             ):
                 safe_fixes.append(
                     SafeFixPreview(
@@ -222,12 +227,94 @@ def _timeout_diagnostic(
     ]
 
 
-def _is_valid_safe_fix_preview(stdout: str, record: CommandExecutionRecord) -> bool:
-    return record.exit_code == 1 and _looks_like_unified_diff(stdout)
+def _is_valid_safe_fix_preview(
+    stdout: str,
+    record: CommandExecutionRecord,
+    cwd: Path,
+    scoped_file_args: list[str],
+) -> bool:
+    return record.exit_code == 1 and _looks_like_safe_unified_diff(
+        stdout,
+        cwd,
+        scoped_file_args,
+    )
 
 
-def _looks_like_unified_diff(text: str) -> bool:
-    return text.startswith("--- ") and "\n+++ " in text
+def _looks_like_safe_unified_diff(text: str, cwd: Path, scoped_file_args: list[str]) -> bool:
+    lines = text.splitlines()
+    if not lines:
+        return False
+
+    allowed_paths = set(scoped_file_args)
+    index = 0
+    saw_file_diff = False
+    while index < len(lines):
+        old_path = _diff_header_path(lines[index], "--- ")
+        if old_path is None:
+            return False
+        index += 1
+
+        if index >= len(lines):
+            return False
+        new_path = _diff_header_path(lines[index], "+++ ")
+        if new_path is None:
+            return False
+        index += 1
+
+        if old_path != new_path or not _is_safe_diff_path(cwd, new_path, allowed_paths):
+            return False
+
+        saw_hunk = False
+        while index < len(lines):
+            if (
+                lines[index].startswith("--- ")
+                and index + 1 < len(lines)
+                and lines[index + 1].startswith("+++ ")
+            ):
+                break
+            if HUNK_HEADER_RE.match(lines[index]) is not None:
+                saw_hunk = True
+            index += 1
+        if not saw_hunk:
+            return False
+        saw_file_diff = True
+
+    return saw_file_diff
+
+
+def _diff_header_path(line: str, prefix: str) -> str | None:
+    if not line.startswith(prefix):
+        return None
+    path_text = line[len(prefix) :].split("\t", 1)[0]
+    if not path_text or path_text != path_text.strip():
+        return None
+    return path_text
+
+
+def _is_safe_diff_path(cwd: Path, path_arg: str, allowed_paths: set[str]) -> bool:
+    if _has_unsafe_diff_path_syntax(path_arg):
+        return False
+    try:
+        normalized = validate_changed_files(cwd, [path_arg])[0].as_posix()
+    except (OSError, SecurityError):
+        return False
+    if allowed_paths and normalized not in allowed_paths:
+        return False
+    candidate = cwd / normalized
+    return candidate.is_file() and not candidate.is_symlink()
+
+
+def _has_unsafe_diff_path_syntax(path_arg: str) -> bool:
+    if path_arg == "" or path_arg.startswith("-") or "\\" in path_arg:
+        return True
+    if not all(character.isprintable() for character in path_arg):
+        return True
+    parts = path_arg.split("/")
+    return (
+        Path(path_arg).is_absolute()
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(len(part) >= 2 and part[1] == ":" and part[0].isalpha() for part in parts)
+    )
 
 
 def _command_failed(record: CommandExecutionRecord, *, source: DiagnosticSource) -> Diagnostic:
@@ -266,7 +353,7 @@ def _invalid_json(source: DiagnosticSource, exc: JSONDecodeError | None) -> Diag
     )
 
 
-def _tool_unavailable(tool: str, exc: ToolUnavailableError) -> Diagnostic:
+def _tool_unavailable(tool: str, exc: CommandExecutionError) -> Diagnostic:
     return diagnostic_from_message(
         source="system",
         code="tool_unavailable",

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agent_quality_mcp.diagnostics import diagnostic_from_message
-from agent_quality_mcp.exceptions import ToolUnavailableError
+from agent_quality_mcp.exceptions import CommandExecutionError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
@@ -34,7 +34,7 @@ class UvAdapter:
         for args in _commands(cwd, mode, self.runner.config):
             try:
                 record = self.runner.run("uv", args, cwd)
-            except ToolUnavailableError as exc:
+            except CommandExecutionError as exc:
                 diagnostics.append(_tool_unavailable("uv", exc))
                 return diagnostics, records
             records.append(record)
@@ -79,7 +79,7 @@ def _record_diagnostics(record: CommandExecutionRecord) -> list[Diagnostic]:
     return []
 
 
-def _tool_unavailable(tool: str, exc: ToolUnavailableError) -> Diagnostic:
+def _tool_unavailable(tool: str, exc: CommandExecutionError) -> Diagnostic:
     return diagnostic_from_message(
         source="system",
         code="tool_unavailable",
