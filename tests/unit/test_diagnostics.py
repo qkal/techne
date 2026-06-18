@@ -114,6 +114,74 @@ def test_normalize_ruff_preserves_rule_fixability_and_range() -> None:
     assert diagnostic.range.end_column == 10
 
 
+def test_normalize_ruff_omits_float_coordinate_ranges() -> None:
+    diagnostics = normalize_ruff(
+        [
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/app.py",
+                "location": {"row": 1.9, "column": 1},
+                "end_location": {"row": 2, "column": 8},
+            }
+        ]
+    )
+
+    assert diagnostics[0].range is None
+
+
+def test_normalize_ruff_rejects_malformed_fixable_values() -> None:
+    diagnostics = normalize_ruff(
+        [
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/string_false.py",
+                "fixable": "false",
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/string_zero.py",
+                "fixable": "0",
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/list.py",
+                "fixable": [1],
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/dict.py",
+                "fixable": {"value": True},
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/true.py",
+                "fixable": True,
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/fix.py",
+                "fix": {"message": "Remove import"},
+            },
+        ]
+    )
+
+    assert [diagnostic.is_fixable for diagnostic in diagnostics] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
+
+
 def test_normalize_ruff_rejects_malformed_top_level_without_crashing() -> None:
     assert normalize_ruff(None) == []
     assert normalize_ruff({"not": "ruff-json"}) == []
@@ -147,6 +215,27 @@ def test_normalize_pyright_error_severity_is_blocking_error() -> None:
     assert diagnostic.range is not None
     assert diagnostic.range.start_line == 5
     assert diagnostic.range.start_column == 9
+
+
+def test_normalize_pyright_omits_float_coordinate_ranges() -> None:
+    diagnostics = normalize_pyright(
+        {
+            "generalDiagnostics": [
+                {
+                    "file": "pkg/app.py",
+                    "severity": "error",
+                    "message": '"str" is not assignable to "int"',
+                    "rule": "reportAssignmentType",
+                    "range": {
+                        "start": {"line": 4.2, "character": 8},
+                        "end": {"line": 4, "character": 12},
+                    },
+                }
+            ]
+        }
+    )
+
+    assert diagnostics[0].range is None
 
 
 def test_normalize_pyright_rejects_malformed_top_level_without_crashing() -> None:

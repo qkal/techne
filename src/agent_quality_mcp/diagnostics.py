@@ -50,7 +50,7 @@ def normalize_ruff(raw: Any) -> list[Diagnostic]:
         message = _string_or_default(item.get("message"), "Ruff diagnostic")
         file = _optional_string(item.get("filename") or item.get("file"))
         diagnostic_range = _ruff_range(item.get("location"), item.get("end_location"))
-        is_fixable = item.get("fix") is not None or bool(item.get("fixable"))
+        is_fixable = _ruff_is_fixable(item)
 
         diagnostics.append(
             _build_diagnostic(
@@ -242,6 +242,10 @@ def _ruff_range(location: Any, end_location: Any) -> DiagnosticRange | None:
     return _diagnostic_range(start_line, start_column, end_line, end_column)
 
 
+def _ruff_is_fixable(item: dict[str, Any]) -> bool:
+    return isinstance(item.get("fix"), dict) or item.get("fixable") is True
+
+
 def _pyright_range(raw_range: Any) -> DiagnosticRange | None:
     if not isinstance(raw_range, dict):
         return None
@@ -282,27 +286,27 @@ def _diagnostic_range(
 
 
 def _positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        integer = int(value)
-    except (TypeError, ValueError):
-        return None
-    if integer <= 0:
+    integer = _strict_int(value)
+    if integer is None or integer <= 0:
         return None
     return integer
 
 
 def _zero_based_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        integer = int(value)
-    except (TypeError, ValueError):
-        return None
-    if integer < 0:
+    integer = _strict_int(value)
+    if integer is None or integer < 0:
         return None
     return integer + 1
+
+
+def _strict_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return None
 
 
 def _string_or_default(value: Any, default: str) -> str:
