@@ -1,0 +1,180 @@
+from agent_quality_mcp.compression import compress_diagnostics
+from agent_quality_mcp.diagnostics import (
+    diagnostic_from_message,
+    normalize_pyright,
+    normalize_ruff,
+)
+from agent_quality_mcp.models import AgentQualityConfig, DiagnosticSeverity
+
+
+def test_diagnostic_from_message_builds_blocking_diagnostic() -> None:
+    diagnostic = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="Required tool is missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        file="pkg/app.py",
+        metadata={"tool": "ruff"},
+    )
+    repeated = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="Required tool is missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        file="pkg/app.py",
+        metadata={"tool": "ruff"},
+    )
+
+    assert diagnostic.source == "system"
+    assert diagnostic.code == "tool_missing"
+    assert diagnostic.message == "Required tool is missing"
+    assert diagnostic.severity == DiagnosticSeverity.BLOCKER
+    assert diagnostic.is_blocking is True
+    assert diagnostic.file == "pkg/app.py"
+    assert diagnostic.metadata == {"tool": "ruff"}
+    assert diagnostic.id == repeated.id
+
+
+def test_normalize_ruff_preserves_rule_fixability_and_range() -> None:
+    diagnostics = normalize_ruff(
+        [
+            {
+                "code": "F401",
+                "message": "`os` imported but unused",
+                "filename": "pkg/app.py",
+                "location": {"row": 2, "column": 1},
+                "end_location": {"row": 2, "column": 10},
+                "fix": {"message": "Remove unused import"},
+            }
+        ]
+    )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.source == "ruff"
+    assert diagnostic.code == "F401"
+    assert diagnostic.message == "`os` imported but unused"
+    assert diagnostic.file == "pkg/app.py"
+    assert diagnostic.severity == DiagnosticSeverity.WARNING
+    assert diagnostic.is_blocking is False
+    assert diagnostic.is_fixable is True
+    assert diagnostic.range is not None
+    assert diagnostic.range.start_line == 2
+    assert diagnostic.range.start_column == 1
+    assert diagnostic.range.end_line == 2
+    assert diagnostic.range.end_column == 10
+
+
+def test_normalize_pyright_error_severity_is_blocking_error() -> None:
+    diagnostics = normalize_pyright(
+        {
+            "generalDiagnostics": [
+                {
+                    "file": "pkg/app.py",
+                    "severity": "error",
+                    "message": '"str" is not assignable to "int"',
+                    "rule": "reportAssignmentType",
+                    "range": {
+                        "start": {"line": 4, "character": 8},
+                        "end": {"line": 4, "character": 12},
+                    },
+                }
+            ]
+        }
+    )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.source == "pyright"
+    assert diagnostic.code == "reportAssignmentType"
+    assert diagnostic.severity == DiagnosticSeverity.ERROR
+    assert diagnostic.is_blocking is True
+    assert diagnostic.file == "pkg/app.py"
+    assert diagnostic.range is not None
+    assert diagnostic.range.start_line == 5
+    assert diagnostic.range.start_column == 9
+
+
+def test_compress_diagnostics_deduplicates_non_blockers_and_truncates() -> None:
+    blocker = diagnostic_from_message(
+        source="pyright",
+        code="reportAssignmentType",
+        message="Type mismatch",
+        severity=DiagnosticSeverity.ERROR,
+        is_blocking=True,
+        file="pkg/app.py",
+    )
+    duplicate_a = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="Unused import",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="pkg/app.py",
+    )
+    duplicate_b = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="Unused import",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="pkg/app.py",
+    )
+    extra = diagnostic_from_message(
+        source="ruff",
+        code="E501",
+        message="Line too long",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="pkg/app.py",
+    )
+
+    compressed, summary = compress_diagnostics(
+        [blocker, duplicate_a, duplicate_b, extra],
+        AgentQualityConfig(max_diagnostics=2),
+    )
+
+    assert compressed == [blocker, duplicate_a]
+    assert summary.total_diagnostics == 4
+    assert summary.returned_diagnostics == 2
+    assert summary.truncated is True
+    assert summary.compressed_groups == [
+        {
+            "source": "ruff",
+            "code": "F401",
+            "message": "Unused import",
+            "file": "pkg/app.py",
+            "severity": "warning",
+            "count": 2,
+        }
+    ]
+
+
+def test_compress_diagnostics_preserves_all_blockers_over_limit() -> None:
+    first = diagnostic_from_message(
+        source="system",
+        code="unsafe_patch",
+        message="Patch is unsafe",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+    )
+    second = diagnostic_from_message(
+        source="pyright",
+        code="reportGeneralTypeIssues",
+        message="Type error",
+        severity=DiagnosticSeverity.ERROR,
+        is_blocking=True,
+        file="pkg/app.py",
+    )
+
+    compressed, summary = compress_diagnostics(
+        [first, second],
+        AgentQualityConfig(max_diagnostics=1),
+    )
+
+    assert compressed == [first, second]
+    assert summary.returned_diagnostics == 2
+    assert summary.total_diagnostics == 2
+    assert summary.truncated is False
