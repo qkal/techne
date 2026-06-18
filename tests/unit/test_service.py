@@ -199,6 +199,39 @@ default_mode = "quick"
     assert calls == [workspace.resolve()]
 
 
+def test_validate_patch_config_rejection_does_not_leak_raw_error(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    _fail_if_tools_run(monkeypatch)
+    raw_value = "raw-sk-review-token"
+    raw_error = f"invalid config contains {raw_value}"
+
+    def rejected_config(
+        workspace_root: str | Path,
+        overrides: dict[str, Any] | None = None,
+    ) -> AgentQualityConfig:
+        raise ConfigurationError(raw_error)
+
+    monkeypatch.setattr(service_module, "load_config", rejected_config)
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        config_overrides={"secret_redaction_patterns": [raw_value]},
+    )
+
+    response = validate_patch_service(request)
+    serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
+
+    assert response.status == "error"
+    assert response.blocking_errors[0].code == "configuration_error"
+    assert response.execution.commands == []
+    assert raw_value not in serialized
+    assert raw_error not in serialized
+    assert "invalid config contains" not in serialized
+
+
 def test_validate_patch_patch_error_does_not_run_tools(
     tmp_path: Path,
     monkeypatch: Any,

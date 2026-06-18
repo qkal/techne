@@ -478,8 +478,10 @@ def _validation_status(diagnostics: list[Diagnostic]) -> ResponseStatus:
 def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
     source = "system"
     code = "agent_quality_mcp_error"
+    message = str(exc)
     if isinstance(exc, ConfigurationError):
         code = "configuration_error"
+        message = "Configuration rejected"
     elif isinstance(exc, WorkspaceError):
         source = "workspace"
         code = "workspace_error"
@@ -496,7 +498,7 @@ def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
     return diagnostic_from_message(
         source=source,
         code=code,
-        message=str(exc),
+        message=message,
         severity=DiagnosticSeverity.BLOCKER,
         is_blocking=True,
     )
@@ -510,7 +512,7 @@ def _record_error_decision(audit: AuditRecorder, exc: AgentQualityMcpError) -> N
     elif isinstance(exc, PatchApplyError):
         audit.permission(f"Patch validation stopped before tools ran: {exc}")
     elif isinstance(exc, ConfigurationError):
-        audit.permission(f"Configuration validation stopped request: {exc}")
+        audit.permission("Configuration validation stopped request")
     else:
         audit.permission(f"Validation stopped before completion: {exc}")
 
