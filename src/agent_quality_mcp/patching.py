@@ -398,6 +398,7 @@ def _validate_target_collisions(
     targets: list[Path],
     target_paths: dict[Path, Path],
 ) -> None:
+    _validate_target_hierarchy(targets)
     existing_targets: dict[tuple[int, int], Path] = {}
     planned_creates: dict[tuple[tuple[int, int], tuple[str, ...], str], Path] = {}
     for relative_target in targets:
@@ -416,6 +417,33 @@ def _validate_target_collisions(
         if previous is not None:
             raise SecurityError("planned creates must not collide by normalized name")
         planned_creates[key] = relative_target
+
+
+def _validate_target_hierarchy(targets: list[Path]) -> None:
+    normalized_targets = [
+        (tuple(_normalized_name(part) for part in target.parts), target)
+        for target in targets
+    ]
+    for index, (left_parts, left_target) in enumerate(normalized_targets):
+        for right_parts, right_target in normalized_targets[index + 1 :]:
+            if _is_ancestor_path(left_parts, right_parts) or _is_ancestor_path(
+                right_parts,
+                left_parts,
+            ):
+                message = (
+                    "patch targets must not contain ancestor/descendant pairs: "
+                    f"{left_target.as_posix()}, {right_target.as_posix()}"
+                )
+                raise SecurityError(message)
+
+
+def _is_ancestor_path(
+    candidate_parts: tuple[str, ...],
+    descendant_parts: tuple[str, ...],
+) -> bool:
+    return len(candidate_parts) < len(descendant_parts) and (
+        descendant_parts[: len(candidate_parts)] == candidate_parts
+    )
 
 
 def _planned_create_collision_key(
@@ -549,8 +577,7 @@ def _commit_prepared_writes(prepared_writes: list[PreparedWrite]) -> None:
             operation = prepared_write.operation
             backup_path = None
             if operation.target.exists():
-                backup_path = _backup_path(operation.target)
-                _replace_path(operation.target, backup_path, operation.relative_target)
+                backup_path = _move_target_to_backup(operation)
             record = CommitRecord(operation.target, operation.relative_target, backup_path)
             committed.append(record)
             if prepared_write.temp_path is not None:
@@ -570,6 +597,16 @@ def _commit_prepared_writes(prepared_writes: list[PreparedWrite]) -> None:
         for record in committed:
             if record.backup_path is not None:
                 _safe_unlink(record.backup_path)
+
+
+def _move_target_to_backup(operation: WriteOperation) -> Path:
+    backup_path = _backup_path(operation.target)
+    try:
+        _replace_path(operation.target, backup_path, operation.relative_target)
+    except PatchApplyError:
+        _safe_unlink(backup_path)
+        raise
+    return backup_path
 
 
 def _backup_path(target: Path) -> Path:

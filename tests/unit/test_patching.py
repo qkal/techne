@@ -599,6 +599,49 @@ def test_apply_unified_diff_rejects_create_under_file_parent(tmp_path: Path) -> 
     with pytest.raises(PatchApplyError):
         apply_unified_diff(tmp_path, [Path("pkg/new.py")], patch_text)
     assert parent.read_text(encoding="utf-8") == "not a directory\n"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["pkg"]
+
+
+def test_apply_unified_diff_rejects_planned_create_descendant_target(
+    tmp_path: Path,
+) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/a
+        @@ -0,0 +1 @@
+        +root
+        --- /dev/null
+        +++ b/a/b
+        @@ -0,0 +1 @@
+        +child
+        """,
+    )
+
+    with pytest.raises((PatchApplyError, SecurityError)):
+        apply_unified_diff(tmp_path, [Path("a"), Path("a/b")], patch_text)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_apply_unified_diff_rejects_planned_create_ancestor_target(
+    tmp_path: Path,
+) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/a/b
+        @@ -0,0 +1 @@
+        +child
+        --- /dev/null
+        +++ b/a
+        @@ -0,0 +1 @@
+        +root
+        """,
+    )
+
+    with pytest.raises((PatchApplyError, SecurityError)):
+        apply_unified_diff(tmp_path, [Path("a/b"), Path("a")], patch_text)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_apply_unified_diff_rejects_targets_that_escape_shadow_root(
@@ -872,6 +915,37 @@ def test_apply_unified_diff_removes_created_dirs_after_later_commit_failure(
     assert existing.read_text(encoding="utf-8") == "value = 1\n"
     assert not created.exists()
     assert not (tmp_path / "newpkg").exists()
+
+
+def test_apply_unified_diff_removes_fresh_backup_after_backup_move_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+    real_replace = os.replace
+
+    def fail_backup_move(source: Path, destination: Path) -> None:
+        if destination.name.startswith(".app.py.") and destination.name.endswith(".bak"):
+            raise OSError("forced backup failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_backup_move)
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+    assert sorted(path.name for path in target.parent.iterdir()) == ["app.py"]
 
 
 def test_apply_unified_diff_does_not_use_external_patch_commands() -> None:
