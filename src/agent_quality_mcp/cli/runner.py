@@ -44,6 +44,8 @@ def resolve_allowed_command(
             raise SecurityError(
                 f"Configured path for {command} must point to executable named {command}"
             )
+        if cwd is not None and _is_raw_within_directory(path, cwd):
+            raise SecurityError(f"Configured path for {command} must not be inside the workspace")
         if not path.exists():
             raise SecurityError(f"Configured path for {command} does not exist")
         if not path.is_file():
@@ -173,6 +175,8 @@ def _safe_path_entries(cwd: Path | None = None) -> list[str]:
         entry = Path(raw_entry)
         if not entry.is_absolute():
             continue
+        if cwd is not None and _is_raw_within_directory(entry, cwd):
+            continue
         try:
             resolved_entry = entry.resolve(strict=True)
         except OSError:
@@ -189,6 +193,8 @@ def _safe_path_entries(cwd: Path | None = None) -> list[str]:
 def _resolve_executable_path(path: Path, command: str, cwd: Path | None = None) -> str:
     if not path.is_absolute():
         raise SecurityError(f"Resolved path for {command} must be absolute")
+    if cwd is not None and _is_raw_within_directory(path, cwd):
+        raise SecurityError(f"Resolved path for {command} must not be inside the workspace")
     try:
         resolved = path.resolve(strict=True)
     except OSError as exc:
@@ -219,6 +225,18 @@ def _is_within_directory(candidate: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_raw_within_directory(candidate: Path, root: Path) -> bool:
+    try:
+        _raw_absolute(candidate).relative_to(_raw_absolute(root))
+    except ValueError:
+        return False
+    return True
+
+
+def _raw_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
 
 
 def _preview(text: str, config: AgentQualityConfig) -> tuple[str, bool]:

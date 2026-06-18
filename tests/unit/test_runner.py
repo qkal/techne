@@ -155,6 +155,29 @@ def test_resolve_allowed_command_rejects_path_symlink_to_wrong_tool(
         raise AssertionError("PATH symlinks must resolve to the requested tool")
 
 
+def test_resolve_allowed_command_rejects_workspace_symlink_path_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    external_bin = tmp_path / "external-bin"
+    workspace.mkdir()
+    external_bin.mkdir()
+    fake_ruff = external_bin / "ruff"
+    fake_ruff.write_text("", encoding="utf-8")
+    fake_ruff.chmod(0o700)
+    workspace_toolchain = workspace / "toolchain"
+    workspace_toolchain.symlink_to(external_bin, target_is_directory=True)
+    monkeypatch.setenv("PATH", str(workspace_toolchain))
+
+    try:
+        resolve_allowed_command("ruff", AgentQualityConfig(), cwd=workspace)
+    except ToolUnavailableError:
+        pass
+    else:
+        raise AssertionError("workspace-owned PATH symlink directories should be rejected")
+
+
 def test_command_runner_rejects_project_bound_absolute_path_entries(
     monkeypatch,
     tmp_path: Path,
@@ -233,6 +256,34 @@ def test_command_runner_rejects_configured_workspace_bound_executable(
         pass
     else:
         raise AssertionError("workspace-bound configured executable should be rejected")
+
+
+def test_command_runner_rejects_workspace_symlink_configured_executable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    external_bin = tmp_path / "external-bin"
+    workspace.mkdir()
+    external_bin.mkdir()
+    external_ruff = external_bin / "ruff"
+    external_ruff.write_text("", encoding="utf-8")
+    external_ruff.chmod(0o700)
+    workspace_ruff = workspace / "ruff"
+    workspace_ruff.symlink_to(external_ruff)
+    config = AgentQualityConfig(command_paths=CommandConfig(ruff=str(workspace_ruff)))
+
+    def fake_run(argv: list[str], **kwargs: Any) -> CompletedProcessStub:
+        raise AssertionError("workspace-owned configured symlink should not run")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    try:
+        CommandRunner(config).run("ruff", ["check"], workspace)
+    except CommandExecutionError:
+        pass
+    else:
+        raise AssertionError("workspace-owned configured symlink should be rejected")
 
 
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
