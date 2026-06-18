@@ -25,7 +25,11 @@ class CommandRunResult:
     stderr: str
 
 
-def resolve_allowed_command(command: str, config: AgentQualityConfig) -> str:
+def resolve_allowed_command(
+    command: str,
+    config: AgentQualityConfig,
+    cwd: Path | None = None,
+) -> str:
     """Resolve an allowlisted command to a safe executable path."""
 
     if command not in ALLOWED_COMMANDS:
@@ -48,7 +52,7 @@ def resolve_allowed_command(command: str, config: AgentQualityConfig) -> str:
             raise SecurityError(f"Configured path for {command} must be executable")
         return _resolve_executable_path(path, command)
 
-    resolved = _resolve_from_safe_path(command)
+    resolved = _resolve_from_safe_path(command, cwd)
     if resolved is None:
         raise ToolUnavailableError(f"Unable to resolve required tool: {command}")
     return resolved
@@ -68,13 +72,14 @@ class CommandRunner:
     def run_with_output(self, command: str, args: list[str], cwd: Path) -> CommandRunResult:
         """Run an allowlisted command and keep raw output for internal parsing only."""
 
-        executable = resolve_allowed_command(command, self.config)
+        executable = resolve_allowed_command(command, self.config, cwd)
+        safe_env = _safe_environment(self.config, cwd)
         started_at = time.monotonic()
         try:
             completed = subprocess.run(  # noqa: S603 - executable is allowlist-resolved.
                 [executable, *args],
                 cwd=str(cwd),
-                env=_safe_environment(self.config),
+                env=safe_env,
                 text=True,
                 capture_output=True,
                 shell=False,
@@ -130,9 +135,9 @@ class CommandRunner:
         )
 
 
-def _safe_environment(config: AgentQualityConfig) -> dict[str, str]:
+def _safe_environment(config: AgentQualityConfig, cwd: Path | None = None) -> dict[str, str]:
     env = {
-        "PATH": os.environ.get("PATH", os.defpath),
+        "PATH": os.pathsep.join(_safe_path_entries(cwd)),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
         "UV_NO_ENV_FILE": "1",
@@ -143,8 +148,19 @@ def _safe_environment(config: AgentQualityConfig) -> dict[str, str]:
     return env
 
 
-def _resolve_from_safe_path(command: str) -> str | None:
+def _resolve_from_safe_path(command: str, cwd: Path | None = None) -> str | None:
+    safe_entries = _safe_path_entries(cwd)
+    if not safe_entries:
+        return None
+    resolved = shutil.which(command, path=os.pathsep.join(safe_entries))
+    if resolved is None:
+        return None
+    return _resolve_executable_path(Path(resolved), command, cwd=cwd)
+
+
+def _safe_path_entries(cwd: Path | None = None) -> list[str]:
     safe_entries: list[str] = []
+    workspace_root = _resolved_directory(cwd) if cwd is not None else None
     for raw_entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
         if raw_entry == "":
             continue
@@ -155,18 +171,16 @@ def _resolve_from_safe_path(command: str) -> str | None:
             resolved_entry = entry.resolve(strict=True)
         except OSError:
             continue
-        if resolved_entry.is_dir():
-            safe_entries.append(str(resolved_entry))
+        if not resolved_entry.is_dir():
+            continue
+        if workspace_root is not None and _is_within_directory(resolved_entry, workspace_root):
+            continue
+        safe_entries.append(str(resolved_entry))
 
-    if not safe_entries:
-        return None
-    resolved = shutil.which(command, path=os.pathsep.join(safe_entries))
-    if resolved is None:
-        return None
-    return _resolve_executable_path(Path(resolved), command)
+    return safe_entries
 
 
-def _resolve_executable_path(path: Path, command: str) -> str:
+def _resolve_executable_path(path: Path, command: str, cwd: Path | None = None) -> str:
     if not path.is_absolute():
         raise SecurityError(f"Resolved path for {command} must be absolute")
     try:
@@ -179,7 +193,24 @@ def _resolve_executable_path(path: Path, command: str) -> str:
         raise SecurityError(f"Resolved path for {command} must be a file")
     if not os.access(resolved, os.X_OK):
         raise SecurityError(f"Resolved path for {command} must be executable")
+    if cwd is not None and _is_within_directory(resolved, _resolved_directory(cwd)):
+        raise SecurityError(f"Resolved path for {command} must not be inside the workspace")
     return str(resolved)
+
+
+def _resolved_directory(path: Path) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except OSError:
+        return path.resolve(strict=False)
+
+
+def _is_within_directory(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _preview(text: str, config: AgentQualityConfig) -> tuple[str, bool]:

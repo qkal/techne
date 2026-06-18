@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.diagnostics import DiagnosticSource, diagnostic_from_message, normalize_ruff
-from agent_quality_mcp.exceptions import ToolUnavailableError
+from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
@@ -17,6 +17,7 @@ from agent_quality_mcp.models import (
     DiagnosticSeverity,
     SafeFixPreview,
 )
+from agent_quality_mcp.paths import validate_changed_files
 
 
 class Runner(Protocol):
@@ -42,6 +43,8 @@ class RuffAdapter:
         file_args, diagnostics = _safe_path_args(cwd, changed_files, source="ruff")
         records: list[CommandExecutionRecord] = []
         safe_fixes: list[SafeFixPreview] = []
+        if changed_files and not file_args:
+            return diagnostics, records, safe_fixes
 
         args = ["check", "--output-format", "json", *_file_args_with_delimiter(file_args)]
         try:
@@ -116,7 +119,7 @@ def _safe_path_args(
     diagnostics: list[Diagnostic] = []
     for path in changed_files:
         path_arg = path.as_posix()
-        if _is_safe_path_arg(path_arg):
+        if _is_safe_path_arg(cwd, path_arg):
             safe_args.append(path_arg)
             continue
         diagnostics.append(
@@ -132,13 +135,19 @@ def _safe_path_args(
     return safe_args, diagnostics
 
 
-def _is_safe_path_arg(path_arg: str) -> bool:
+def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
     path = Path(path_arg)
     if path.is_absolute() or path_arg in {"", "."} or path_arg.startswith("-"):
         return False
     if ".." in path.parts:
         return False
-    return all(character.isprintable() for character in path_arg)
+    if not all(character.isprintable() for character in path_arg):
+        return False
+    try:
+        validate_changed_files(cwd, [path_arg])
+    except (OSError, SecurityError):
+        return False
+    return True
 
 
 def _file_args_with_delimiter(file_args: list[str]) -> list[str]:

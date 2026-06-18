@@ -251,6 +251,54 @@ def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
     ]
 
 
+def test_ruff_adapter_skips_tool_when_all_changed_files_are_unsafe(tmp_path: Path) -> None:
+    runner = StubRunner(
+        [_record("ruff", ["check", "--output-format", "json"], tmp_path, stdout="[]")]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("../outside.py"), Path("--fix")],
+        "standard",
+    )
+
+    assert records == []
+    assert safe_fixes == []
+    assert runner.calls == []
+    assert [diagnostic.code for diagnostic in diagnostics] == ["unsafe_path", "unsafe_path"]
+
+
+def test_ruff_adapter_skips_symlink_escape_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "app.py").write_text("print('escape')\n", encoding="utf-8")
+    (workspace / "pkg").symlink_to(outside, target_is_directory=True)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                workspace,
+                stdout="[]",
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        workspace,
+        [Path("pkg/app.py")],
+        "standard",
+    )
+
+    assert records == []
+    assert safe_fixes == []
+    assert runner.calls == []
+    assert diagnostics[0].code == "unsafe_path"
+    assert diagnostics[0].file == "pkg/app.py"
+
+
 def test_pyright_adapter_quick_mode_includes_changed_files_and_parses_json(
     tmp_path: Path,
 ) -> None:
@@ -368,8 +416,8 @@ def test_pyright_adapter_quick_mode_skips_option_like_paths_instead_of_running_t
 
     diagnostics, records = PyrightAdapter(runner).check(tmp_path, [Path("--stats")], "quick")
 
-    assert runner.calls == [("pyright", ["--outputjson"], tmp_path)]
-    assert len(records) == 1
+    assert runner.calls == []
+    assert records == []
     assert diagnostics[0].source == "pyright"
     assert diagnostics[0].code == "unsafe_path"
     assert diagnostics[0].file == "--stats"
@@ -403,6 +451,45 @@ def test_pyright_adapter_quick_mode_skips_unsafe_changed_file_paths(
         "pkg/\napp.py",
         ".",
     ]
+
+
+def test_pyright_adapter_quick_mode_skips_tool_when_all_changed_files_are_unsafe(
+    tmp_path: Path,
+) -> None:
+    runner = StubRunner([_record("pyright", ["--outputjson"], tmp_path, stdout="{}")])
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [Path("../outside.py"), Path("--stats")],
+        "quick",
+    )
+
+    assert records == []
+    assert runner.calls == []
+    assert [diagnostic.code for diagnostic in diagnostics] == ["unsafe_path", "unsafe_path"]
+
+
+def test_pyright_adapter_quick_mode_skips_symlink_escape_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "app.py").write_text("print('escape')\n", encoding="utf-8")
+    (workspace / "pkg").symlink_to(outside, target_is_directory=True)
+    runner = StubRunner(
+        [_record("pyright", ["--outputjson", "pkg/app.py"], workspace, stdout="{}")]
+    )
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        workspace,
+        [Path("pkg/app.py")],
+        "quick",
+    )
+
+    assert records == []
+    assert runner.calls == []
+    assert diagnostics[0].code == "unsafe_path"
+    assert diagnostics[0].file == "pkg/app.py"
 
 
 def test_pyright_adapter_reports_invalid_json_as_warning_with_records(tmp_path: Path) -> None:

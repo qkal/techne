@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -119,6 +120,64 @@ def test_resolve_allowed_command_uses_absolute_path_fallback(
     resolved = resolve_allowed_command("ruff", AgentQualityConfig())
 
     assert resolved == str(absolute_ruff.resolve(strict=True))
+
+
+def test_command_runner_rejects_project_bound_absolute_path_entries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    venv_bin = workspace / ".venv" / "bin"
+    node_bin = workspace / "node_modules" / ".bin"
+    venv_bin.mkdir(parents=True)
+    node_bin.mkdir(parents=True)
+    for executable in [venv_bin / "ruff", node_bin / "pyright"]:
+        executable.write_text("", encoding="utf-8")
+        executable.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{venv_bin}{os.pathsep}{node_bin}")
+
+    def fake_run(argv: list[str], **kwargs: Any) -> CompletedProcessStub:
+        raise AssertionError("project-bound PATH executable should not run")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    for command in ["ruff", "pyright"]:
+        try:
+            CommandRunner(AgentQualityConfig()).run(command, ["--version"], workspace)
+        except ToolUnavailableError:
+            pass
+        else:
+            raise AssertionError(f"{command} should not resolve from project PATH entries")
+
+
+def test_command_runner_passes_sanitized_child_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    project_bin = workspace / ".venv" / "bin"
+    project_bin.mkdir(parents=True)
+    trusted_bin = tmp_path / "trusted-bin"
+    trusted_bin.mkdir()
+    for executable in [project_bin / "ruff", trusted_bin / "ruff"]:
+        executable.write_text("", encoding="utf-8")
+        executable.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{project_bin}{os.pathsep}{trusted_bin}")
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> CompletedProcessStub:
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return CompletedProcessStub(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    CommandRunner(AgentQualityConfig()).run("ruff", ["--version"], workspace)
+
+    assert captured["argv"][0] == str((trusted_bin / "ruff").resolve(strict=True))
+    assert captured["kwargs"]["env"]["PATH"] == str(trusted_bin.resolve(strict=True))
 
 
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(

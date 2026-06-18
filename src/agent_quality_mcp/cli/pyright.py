@@ -9,13 +9,14 @@ from typing import Any, Protocol
 
 from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.diagnostics import diagnostic_from_message, normalize_pyright
-from agent_quality_mcp.exceptions import ToolUnavailableError
+from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
     Diagnostic,
     DiagnosticSeverity,
 )
+from agent_quality_mcp.paths import validate_changed_files
 
 
 class Runner(Protocol):
@@ -41,6 +42,8 @@ class PyrightAdapter:
         if mode == "quick":
             file_args, diagnostics = _safe_path_args(cwd, changed_files)
         records: list[CommandExecutionRecord] = []
+        if mode == "quick" and changed_files and not file_args:
+            return diagnostics, records
 
         try:
             result = self.runner.run_with_output("pyright", ["--outputjson", *file_args], cwd)
@@ -86,7 +89,7 @@ def _safe_path_args(cwd: Path, changed_files: list[Path]) -> tuple[list[str], li
     diagnostics: list[Diagnostic] = []
     for path in changed_files:
         path_arg = path.as_posix()
-        if _is_safe_path_arg(path_arg) and not path_arg.startswith("-"):
+        if _is_safe_path_arg(cwd, path_arg) and not path_arg.startswith("-"):
             safe_args.append(path_arg)
             continue
         diagnostics.append(
@@ -102,13 +105,19 @@ def _safe_path_args(cwd: Path, changed_files: list[Path]) -> tuple[list[str], li
     return safe_args, diagnostics
 
 
-def _is_safe_path_arg(path_arg: str) -> bool:
+def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
     path = Path(path_arg)
     if path.is_absolute() or path_arg in {"", "."} or path_arg.startswith("-"):
         return False
     if ".." in path.parts:
         return False
-    return all(character.isprintable() for character in path_arg)
+    if not all(character.isprintable() for character in path_arg):
+        return False
+    try:
+        validate_changed_files(cwd, [path_arg])
+    except (OSError, SecurityError):
+        return False
+    return True
 
 
 def _timeout_diagnostic(record: CommandExecutionRecord) -> list[Diagnostic]:
