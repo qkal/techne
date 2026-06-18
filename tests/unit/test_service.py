@@ -138,8 +138,15 @@ def test_validate_patch_enforces_request_timeout(tmp_path: Path, monkeypatch: An
         "load_config",
         lambda workspace_root, overrides=None: AgentQualityConfig(request_timeout_seconds=1),
     )
-    monotonic_values = iter([0.0, 2.0, 2.0])
-    monkeypatch.setattr("agent_quality_mcp.service.time.monotonic", lambda: next(monotonic_values))
+    monotonic_calls = {"count": 0}
+
+    def fake_monotonic() -> float:
+        monotonic_calls["count"] += 1
+        if monotonic_calls["count"] == 1:
+            return 0.0
+        return 2.0
+
+    monkeypatch.setattr("agent_quality_mcp.service.time.monotonic", fake_monotonic)
 
     request = ValidatePatchRequest(
         workspace_root=str(tmp_path),
@@ -218,6 +225,27 @@ def test_validate_patch_patch_error_does_not_run_tools(
     assert response.real_workspace_modified is False
     assert response.shadow_workspace_used is True
     assert response.blocking_errors[0].source == "patch"
+
+
+def test_validate_patch_path_validation_error_does_not_run_tools(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    _fail_if_tools_run(monkeypatch)
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["../escape.py"],
+        mode=ValidationMode.QUICK,
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.status == "error"
+    assert response.real_workspace_modified is False
+    assert response.shadow_workspace_used is False
+    assert response.blocking_errors[0].source == "security"
+    assert response.blocking_errors[0].code == "security_error"
 
 
 def test_validate_patch_preserves_tool_unavailable_diagnostics(
@@ -324,3 +352,26 @@ def test_inspect_workspace_service_resolves_unavailable_commands_without_source(
     assert response.resolved_command_paths == {"uv": None, "ruff": None, "pyright": None}
     assert "value = 1" not in serialized
     assert "source_contents" not in serialized
+
+
+def test_inspect_workspace_config_rejection_does_not_leak_raw_error(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    raw_value = "raw-sk-review-token"
+
+    def rejected_config(
+        workspace_root: str | Path,
+        overrides: dict[str, Any] | None = None,
+    ) -> AgentQualityConfig:
+        raise ConfigurationError(f"invalid config contains {raw_value}")
+
+    monkeypatch.setattr(service_module, "load_config", rejected_config)
+
+    response = inspect_workspace_service(str(tmp_path))
+    serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
+
+    assert raw_value not in serialized
+    assert "invalid config contains" not in serialized
+    assert "Configuration rejected; safe defaults used" in response.security_decisions

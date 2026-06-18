@@ -218,9 +218,9 @@ def inspect_workspace_service(
     ]
     try:
         config = load_config(root, config_overrides)
-    except ConfigurationError as exc:
+    except ConfigurationError:
         config = AgentQualityConfig()
-        security_decisions.append(f"Configuration rejected; safe defaults used: {exc}")
+        security_decisions.append("Configuration rejected; safe defaults used")
     file_inspection = inspect_workspace_files(root, config)
     availability, resolved_paths, command_decisions = _inspect_command_availability(root, config)
     security_decisions.extend(command_decisions)
