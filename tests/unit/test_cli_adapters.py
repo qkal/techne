@@ -41,7 +41,8 @@ def _record(
     *,
     stdout: str = "",
     stderr: str = "",
-    exit_code: int = 0,
+    exit_code: int | None = 0,
+    timed_out: bool = False,
 ) -> CommandExecutionRecord:
     return CommandExecutionRecord(
         command=command,
@@ -49,6 +50,7 @@ def _record(
         cwd=str(cwd),
         duration_ms=7,
         exit_code=exit_code,
+        timed_out=timed_out,
         stdout_preview=stdout,
         stderr_preview=stderr,
     )
@@ -209,6 +211,82 @@ def test_ruff_adapter_parses_full_stdout_when_record_preview_is_truncated(
     assert diagnostics[0].source == "ruff"
     assert diagnostics[0].code == "F401"
     assert diagnostics[0].file == "pkg/app.py"
+
+
+def test_ruff_adapter_skips_safe_fix_preview_after_primary_timeout(tmp_path: Path) -> None:
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                exit_code=None,
+                timed_out=True,
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="--- partial diff\n",
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert runner.calls == [
+        ("ruff", ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"], tmp_path)
+    ]
+    assert len(records) == 1
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "timeout"
+
+
+def test_ruff_adapter_ignores_timed_out_safe_fix_preview_partial_stdout(
+    tmp_path: Path,
+) -> None:
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="--- partial diff\n",
+                exit_code=None,
+                timed_out=True,
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert runner.calls == [
+        ("ruff", ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"], tmp_path),
+        ("ruff", ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"], tmp_path),
+    ]
+    assert len(records) == 2
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "timeout"
 
 
 def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:

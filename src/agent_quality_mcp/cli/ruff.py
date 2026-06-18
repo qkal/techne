@@ -61,6 +61,8 @@ class RuffAdapter:
         record = result.record
         records.append(record)
         diagnostics.extend(_diagnostics_from_result(result))
+        if record.timed_out:
+            return diagnostics, records, safe_fixes
 
         if preview_safe_fixes:
             fix_args = [
@@ -77,7 +79,8 @@ class RuffAdapter:
                 return diagnostics, records, safe_fixes
             fix_record = fix_result.record
             records.append(fix_record)
-            if fix_record.stdout_preview:
+            diagnostics.extend(_timeout_diagnostic(fix_record, source="ruff"))
+            if not fix_record.timed_out and fix_record.stdout_preview:
                 safe_fixes.append(
                     SafeFixPreview(
                         tool="ruff",
@@ -88,7 +91,6 @@ class RuffAdapter:
                         requires_human_review=True,
                     )
                 )
-            diagnostics.extend(_timeout_diagnostic(fix_record, source="ruff"))
 
         return diagnostics, records, safe_fixes
 
