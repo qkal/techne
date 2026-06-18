@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import stat
 from pathlib import Path
 from textwrap import dedent
 
@@ -31,6 +32,28 @@ def test_apply_unified_diff_modifies_existing_file(tmp_path: Path) -> None:
     apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
 
     assert target.read_text(encoding="utf-8") == "alpha\ngamma\nomega\n"
+
+
+def test_apply_unified_diff_preserves_existing_file_mode(tmp_path: Path) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    target.chmod(0o644)
+    original_mode = stat.S_IMODE(target.stat().st_mode)
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert stat.S_IMODE(target.stat().st_mode) == original_mode
 
 
 def test_apply_unified_diff_handles_zero_length_insertion_hunk(tmp_path: Path) -> None:
@@ -749,6 +772,50 @@ def test_apply_unified_diff_rolls_back_committed_writes_on_later_commit_failure(
         apply_unified_diff(tmp_path, [Path("pkg/one.py"), Path("pkg/two.py")], patch_text)
     assert first.read_text(encoding="utf-8") == "one = 1\n"
     assert second.read_text(encoding="utf-8") == "two = 1\n"
+
+
+def test_apply_unified_diff_removes_created_dirs_after_later_commit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = tmp_path / "pkg" / "existing.py"
+    existing.parent.mkdir()
+    existing.write_text("value = 1\n", encoding="utf-8")
+    created = tmp_path / "newpkg" / "nested" / "created.py"
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/newpkg/nested/created.py
+        @@ -0,0 +1 @@
+        +created = True
+        --- a/pkg/existing.py
+        +++ b/pkg/existing.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+    real_replace = os.replace
+    failed = False
+
+    def fail_existing_commit(source: Path, destination: Path) -> None:
+        nonlocal failed
+        if not failed and destination == existing:
+            failed = True
+            raise OSError("forced replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_existing_commit)
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(
+            tmp_path,
+            [Path("newpkg/nested/created.py"), Path("pkg/existing.py")],
+            patch_text,
+        )
+    assert existing.read_text(encoding="utf-8") == "value = 1\n"
+    assert not created.exists()
+    assert not (tmp_path / "newpkg").exists()
 
 
 def test_apply_unified_diff_does_not_use_external_patch_commands() -> None:

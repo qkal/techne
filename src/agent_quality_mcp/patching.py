@@ -405,29 +405,49 @@ def _validate_target_parent(target: Path, relative_target: Path) -> None:
         raise PatchApplyError(f"target parent is not a directory: {relative_target.as_posix()}")
 
 
-def _create_target_parent(target: Path, relative_target: Path) -> None:
+def _create_target_parent(target: Path, relative_target: Path) -> list[Path]:
+    missing_parents: list[Path] = []
+    current = target.parent
+    while not current.exists():
+        missing_parents.append(current)
+        current = current.parent
+    if not current.is_dir():
+        raise PatchApplyError(f"target parent is not a directory: {relative_target.as_posix()}")
+
+    created: list[Path] = []
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        for parent in reversed(missing_parents):
+            parent.mkdir()
+            created.append(parent)
     except OSError as exc:
+        _remove_created_dirs(created)
         message = f"failed to create target parent: {relative_target.as_posix()}"
         raise PatchApplyError(message) from exc
+    return created
 
 
 def _apply_write_operations(writes: list[WriteOperation]) -> None:
     _preflight_write_operations(writes)
     prepared: list[PreparedWrite] = []
+    created_dirs: list[Path] = []
+    committed = False
     try:
         for operation in writes:
             temp_path = None
             if operation.content is not None:
-                _create_target_parent(operation.target, operation.relative_target)
+                created_dirs.extend(
+                    _create_target_parent(operation.target, operation.relative_target),
+                )
                 temp_path = _write_temp_utf8(operation)
             prepared.append(PreparedWrite(operation, temp_path))
         _commit_prepared_writes(prepared)
+        committed = True
     finally:
         for prepared_write in prepared:
             if prepared_write.temp_path is not None:
                 _safe_unlink(prepared_write.temp_path)
+        if not committed:
+            _remove_created_dirs(created_dirs)
 
 
 def _preflight_write_operations(writes: list[WriteOperation]) -> None:
@@ -450,6 +470,9 @@ def _write_temp_utf8(operation: WriteOperation) -> Path:
         with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
             file_descriptor = None
             handle.write(operation.content or "")
+        if operation.target.exists():
+            target_stat = _stat_target(operation.target, operation.relative_target)
+            temp_path.chmod(stat.S_IMODE(target_stat.st_mode))
         return temp_path
     except OSError as exc:
         if file_descriptor is not None:
@@ -529,6 +552,14 @@ def _safe_unlink(path: Path) -> None:
         return
     except OSError:
         return
+
+
+def _remove_created_dirs(created_dirs: list[Path]) -> None:
+    for directory in sorted(set(created_dirs), key=lambda path: len(path.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
 
 
 def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
