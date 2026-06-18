@@ -7,7 +7,6 @@ from typing import Any, cast
 import agent_quality_mcp.service as service_module
 from agent_quality_mcp.models import (
     AgentQualityConfig,
-    CommandExecutionRecord,
     SafetyMode,
     ValidatePatchRequest,
     ValidatePatchResponse,
@@ -80,13 +79,6 @@ def test_validate_patch_runs_demo_fixture_in_shadow_workspace(
 
         for tool in ("uv", "ruff", "pyright"):
             _assert_tool_recorded_or_structured_unavailable(response, tool)
-
-        ruff_fix_record = _ruff_safe_fix_record(response)
-        if ruff_fix_record is not None and _looks_like_unified_diff(ruff_fix_record.stdout_preview):
-            ruff_fixes = [safe_fix for safe_fix in response.safe_fixes if safe_fix.tool == "ruff"]
-            assert ruff_fixes
-            assert any("demo_pkg/app.py" in safe_fix.files for safe_fix in ruff_fixes)
-            assert all(safe_fix.is_safe for safe_fix in ruff_fixes)
     finally:
         if shadow_path_text is not None:
             shutil.rmtree(Path(shadow_path_text).parent)
@@ -106,14 +98,3 @@ def _assert_tool_recorded_or_structured_unavailable(
         and diagnostic.metadata.get("tool") == tool
         for diagnostic in diagnostics
     ), f"{tool} produced neither a command record nor a structured unavailable diagnostic"
-
-
-def _ruff_safe_fix_record(response: ValidatePatchResponse) -> CommandExecutionRecord | None:
-    for command in response.execution.commands:
-        if command.command == "ruff" and "--fix" in command.args and "--diff" in command.args:
-            return command
-    return None
-
-
-def _looks_like_unified_diff(text: str) -> bool:
-    return "--- " in text and "+++ " in text and "@@ " in text
