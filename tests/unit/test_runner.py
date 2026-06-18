@@ -49,12 +49,40 @@ def test_resolve_allowed_command_rejects_configured_paths_with_wrong_basename(
         raise AssertionError("configured command basename should match the tool")
 
 
+def test_resolve_allowed_command_rejects_nonexistent_configured_paths(tmp_path: Path) -> None:
+    config = AgentQualityConfig(command_paths=CommandConfig(uv=str(tmp_path / "uv")))
+
+    try:
+        resolve_allowed_command("uv", config)
+    except SecurityError:
+        pass
+    else:
+        raise AssertionError("nonexistent configured command paths should be rejected")
+
+
+def test_resolve_allowed_command_rejects_non_executable_configured_paths(
+    tmp_path: Path,
+) -> None:
+    fake_ruff = tmp_path / "ruff"
+    fake_ruff.write_text("", encoding="utf-8")
+    fake_ruff.chmod(0o600)
+    config = AgentQualityConfig(command_paths=CommandConfig(ruff=str(fake_ruff)))
+
+    try:
+        resolve_allowed_command("ruff", config)
+    except SecurityError:
+        pass
+    else:
+        raise AssertionError("non-executable configured command paths should be rejected")
+
+
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     fake_uv = tmp_path / "uv"
     fake_uv.write_text("", encoding="utf-8")
+    fake_uv.chmod(0o700)
     config = AgentQualityConfig(
         command_paths=CommandConfig(uv=str(fake_uv)),
         max_output_bytes=24,
@@ -115,6 +143,7 @@ def test_command_runner_records_timeout_without_raising(
 ) -> None:
     fake_ruff = tmp_path / "ruff"
     fake_ruff.write_text("", encoding="utf-8")
+    fake_ruff.chmod(0o700)
     config = AgentQualityConfig(command_paths=CommandConfig(ruff=str(fake_ruff)))
 
     def fake_run(argv: list[str], **kwargs: Any) -> CompletedProcessStub:

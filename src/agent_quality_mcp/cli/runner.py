@@ -30,6 +30,12 @@ def resolve_allowed_command(command: str, config: AgentQualityConfig) -> str:
             raise SecurityError(
                 f"Configured path for {command} must point to executable named {command}"
             )
+        if not path.exists():
+            raise SecurityError(f"Configured path for {command} does not exist")
+        if not path.is_file():
+            raise SecurityError(f"Configured path for {command} must be a file")
+        if not os.access(path, os.X_OK):
+            raise SecurityError(f"Configured path for {command} must be executable")
         return str(path)
 
     resolved = shutil.which(command)

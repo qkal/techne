@@ -143,7 +143,9 @@ def test_ruff_adapter_converts_unavailable_tool_to_warning_diagnostic(tmp_path: 
     assert diagnostics[0].metadata == {"tool": "ruff"}
 
 
-def test_pyright_adapter_parses_json_and_returns_diagnostics_records(tmp_path: Path) -> None:
+def test_pyright_adapter_quick_mode_includes_changed_files_and_parses_json(
+    tmp_path: Path,
+) -> None:
     pyright_json = json.dumps(
         {
             "generalDiagnostics": [
@@ -175,7 +177,7 @@ def test_pyright_adapter_parses_json_and_returns_diagnostics_records(tmp_path: P
     diagnostics, records = PyrightAdapter(runner).check(
         tmp_path,
         [Path("pkg/app.py")],
-        "strict",
+        "quick",
     )
 
     assert runner.calls == [("pyright", ["--outputjson", "pkg/app.py"], tmp_path)]
@@ -187,12 +189,40 @@ def test_pyright_adapter_parses_json_and_returns_diagnostics_records(tmp_path: P
     assert diagnostics[0].is_blocking is True
 
 
-def test_pyright_adapter_skips_option_like_paths_instead_of_running_them(
+def test_pyright_adapter_standard_mode_omits_changed_files(tmp_path: Path) -> None:
+    runner = StubRunner([_record("pyright", ["--outputjson"], tmp_path, stdout="{}")])
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+    )
+
+    assert diagnostics == []
+    assert len(records) == 1
+    assert runner.calls == [("pyright", ["--outputjson"], tmp_path)]
+
+
+def test_pyright_adapter_strict_mode_omits_changed_files(tmp_path: Path) -> None:
+    runner = StubRunner([_record("pyright", ["--outputjson"], tmp_path, stdout="{}")])
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "strict",
+    )
+
+    assert diagnostics == []
+    assert len(records) == 1
+    assert runner.calls == [("pyright", ["--outputjson"], tmp_path)]
+
+
+def test_pyright_adapter_quick_mode_skips_option_like_paths_instead_of_running_them(
     tmp_path: Path,
 ) -> None:
     runner = StubRunner([_record("pyright", ["--outputjson"], tmp_path, stdout="{}")])
 
-    diagnostics, records = PyrightAdapter(runner).check(tmp_path, [Path("--stats")], "standard")
+    diagnostics, records = PyrightAdapter(runner).check(tmp_path, [Path("--stats")], "quick")
 
     assert runner.calls == [("pyright", ["--outputjson"], tmp_path)]
     assert len(records) == 1

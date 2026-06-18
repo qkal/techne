@@ -35,8 +35,10 @@ class PyrightAdapter:
         changed_files: list[Path],
         mode: str,
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
-        del mode
-        file_args, diagnostics = _safe_path_args(cwd, changed_files)
+        file_args: list[str] = []
+        diagnostics: list[Diagnostic] = []
+        if mode == "quick":
+            file_args, diagnostics = _safe_path_args(cwd, changed_files)
         records: list[CommandExecutionRecord] = []
 
         try:
