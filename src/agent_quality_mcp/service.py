@@ -233,7 +233,10 @@ def inspect_workspace_service(
         default_limits=_default_limits(config),
         python_file_count=file_inspection.python_file_count,
         config_files=file_inspection.config_files,
-        excluded_directories=list(config.workspace_exclusions),
+        excluded_directories=_safe_list_summary(
+            config.workspace_exclusions,
+            "workspace_exclusions",
+        ),
         security_decisions=security_decisions,
     )
 
@@ -574,7 +577,25 @@ def _inspect_command_availability(
 
 
 def _inspect_response_config(config: AgentQualityConfig) -> AgentQualityConfig:
-    return config.model_copy(update={"secret_redaction_patterns": []})
+    return config.model_copy(
+        update={
+            "workspace_exclusions": _safe_list_summary(
+                config.workspace_exclusions,
+                "workspace_exclusions",
+            ),
+            "secret_file_patterns": _safe_list_summary(
+                config.secret_file_patterns,
+                "secret_file_patterns",
+            ),
+            "secret_redaction_patterns": [],
+        }
+    )
+
+
+def _safe_list_summary(values: list[str], label: str) -> list[str]:
+    if not values:
+        return []
+    return [f"<{label}:count={len(values)}>"]
 
 
 def _default_limits(config: AgentQualityConfig) -> dict[str, int]:

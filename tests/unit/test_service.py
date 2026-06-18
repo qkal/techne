@@ -377,24 +377,27 @@ def test_inspect_workspace_config_rejection_does_not_leak_raw_error(
     assert "Configuration rejected; safe defaults used" in response.security_decisions
 
 
-def test_inspect_workspace_sanitizes_accepted_secret_redaction_patterns(
+def test_inspect_workspace_sanitizes_accepted_config_string_lists(
     tmp_path: Path,
 ) -> None:
     _write_python_file(tmp_path)
-    (tmp_path / "ignored").mkdir()
-    (tmp_path / "ignored" / "hidden.py").write_text("hidden = True\n", encoding="utf-8")
     raw_value = "raw-sk-review-token"
+    (tmp_path / raw_value).mkdir()
+    (tmp_path / raw_value / "hidden.py").write_text("hidden = True\n", encoding="utf-8")
 
     response = inspect_workspace_service(
         str(tmp_path),
         config_overrides={
-            "workspace_exclusions": ["ignored"],
+            "workspace_exclusions": [raw_value],
+            "secret_file_patterns": [raw_value],
             "secret_redaction_patterns": [raw_value],
         },
     )
     serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
 
     assert response.python_file_count == 1
-    assert response.config.workspace_exclusions == ["ignored"]
+    assert response.config.workspace_exclusions != [raw_value]
+    assert response.config.secret_file_patterns != [raw_value]
     assert response.config.secret_redaction_patterns == []
+    assert response.excluded_directories != [raw_value]
     assert raw_value not in serialized
