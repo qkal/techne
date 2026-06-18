@@ -195,6 +195,8 @@ def _resolve_executable_path(path: Path, command: str, cwd: Path | None = None) 
         raise SecurityError(f"Unable to resolve executable path for {command}: {exc}") from exc
     if not resolved.is_absolute():
         raise SecurityError(f"Resolved path for {command} must be absolute")
+    if resolved.name != command:
+        raise SecurityError(f"Resolved path for {command} must point to executable named {command}")
     if not resolved.is_file():
         raise SecurityError(f"Resolved path for {command} must be a file")
     if not os.access(resolved, os.X_OK):

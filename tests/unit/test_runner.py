@@ -77,6 +77,21 @@ def test_resolve_allowed_command_rejects_non_executable_configured_paths(
         raise AssertionError("non-executable configured command paths should be rejected")
 
 
+def test_resolve_allowed_command_rejects_configured_symlink_to_wrong_tool(
+    tmp_path: Path,
+) -> None:
+    fake_ruff = tmp_path / "ruff"
+    fake_ruff.symlink_to("/bin/sh")
+    config = AgentQualityConfig(command_paths=CommandConfig(ruff=str(fake_ruff)))
+
+    try:
+        resolve_allowed_command("ruff", config)
+    except SecurityError:
+        pass
+    else:
+        raise AssertionError("configured symlinks must resolve to the requested tool")
+
+
 def test_resolve_allowed_command_ignores_relative_and_empty_path_entries(
     monkeypatch,
     tmp_path: Path,
@@ -120,6 +135,24 @@ def test_resolve_allowed_command_uses_absolute_path_fallback(
     resolved = resolve_allowed_command("ruff", AgentQualityConfig())
 
     assert resolved == str(absolute_ruff.resolve(strict=True))
+
+
+def test_resolve_allowed_command_rejects_path_symlink_to_wrong_tool(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    fake_ruff = tool_dir / "ruff"
+    fake_ruff.symlink_to("/bin/sh")
+    monkeypatch.setenv("PATH", str(tool_dir))
+
+    try:
+        resolve_allowed_command("ruff", AgentQualityConfig())
+    except SecurityError:
+        pass
+    else:
+        raise AssertionError("PATH symlinks must resolve to the requested tool")
 
 
 def test_command_runner_rejects_project_bound_absolute_path_entries(
