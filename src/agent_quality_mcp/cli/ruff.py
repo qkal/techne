@@ -20,7 +20,11 @@ from agent_quality_mcp.models import (
 )
 from agent_quality_mcp.paths import validate_changed_files
 
-HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$")
+HUNK_HEADER_RE = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@(?: .*)?$"
+)
+NO_NEWLINE_MARKER = "\\ No newline at end of file"
 
 
 class Runner(Protocol):
@@ -272,13 +276,13 @@ def _looks_like_safe_unified_diff(text: str, cwd: Path, scoped_file_args: list[s
                 and lines[index + 1].startswith("+++ ")
             ):
                 break
-            if HUNK_HEADER_RE.match(lines[index]) is not None:
+            hunk_match = HUNK_HEADER_RE.match(lines[index])
+            if hunk_match is not None:
                 saw_hunk = True
-                index += 1
-                if not _consume_valid_hunk_body(lines, index):
+                next_index = _consume_valid_hunk(lines, index + 1, hunk_match)
+                if next_index is None:
                     return False
-                while index < len(lines) and _is_valid_hunk_body_line(lines[index]):
-                    index += 1
+                index = next_index
                 continue
             return False
         if not saw_hunk:
@@ -288,28 +292,72 @@ def _looks_like_safe_unified_diff(text: str, cwd: Path, scoped_file_args: list[s
     return saw_file_diff
 
 
-def _consume_valid_hunk_body(lines: list[str], start: int) -> bool:
+def _consume_valid_hunk(
+    lines: list[str],
+    start: int,
+    hunk_match: re.Match[str],
+) -> int | None:
     index = start
     saw_body_line = False
+    old_seen = 0
+    new_seen = 0
+    old_expected = _hunk_line_count(hunk_match, "old_count")
+    new_expected = _hunk_line_count(hunk_match, "new_count")
+
     while index < len(lines):
         if HUNK_HEADER_RE.match(lines[index]) is not None:
-            return saw_body_line
+            if _hunk_counts_match(saw_body_line, old_seen, old_expected, new_seen, new_expected):
+                return index
+            return None
         if (
             lines[index].startswith("--- ")
             and index + 1 < len(lines)
             and lines[index + 1].startswith("+++ ")
         ):
-            return saw_body_line
-        if not _is_valid_hunk_body_line(lines[index]):
-            return False
-        if lines[index][0] in {" ", "+", "-"}:
+            if _hunk_counts_match(saw_body_line, old_seen, old_expected, new_seen, new_expected):
+                return index
+            return None
+        counts = _hunk_body_line_counts(lines[index])
+        if counts is None:
+            return None
+        old_delta, new_delta = counts
+        if old_delta or new_delta:
             saw_body_line = True
+        old_seen += old_delta
+        new_seen += new_delta
         index += 1
-    return saw_body_line
+    if _hunk_counts_match(saw_body_line, old_seen, old_expected, new_seen, new_expected):
+        return index
+    return None
 
 
-def _is_valid_hunk_body_line(line: str) -> bool:
-    return line.startswith((" ", "+", "-", "\\"))
+def _hunk_line_count(hunk_match: re.Match[str], group: str) -> int:
+    value = hunk_match.group(group)
+    if value is None:
+        return 1
+    return int(value)
+
+
+def _hunk_counts_match(
+    saw_body_line: bool,
+    old_seen: int,
+    old_expected: int,
+    new_seen: int,
+    new_expected: int,
+) -> bool:
+    return saw_body_line and old_seen == old_expected and new_seen == new_expected
+
+
+def _hunk_body_line_counts(line: str) -> tuple[int, int] | None:
+    if line.startswith(" "):
+        return (1, 1)
+    if line.startswith("-"):
+        return (1, 0)
+    if line.startswith("+"):
+        return (0, 1)
+    if line == NO_NEWLINE_MARKER:
+        return (0, 0)
+    return None
 
 
 def _diff_header_path(line: str, prefix: str) -> str | None:
