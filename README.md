@@ -116,7 +116,7 @@ Example response excerpt:
     "commands": [
       {
         "command": "ruff",
-        "args": ["ruff", "check", "--output-format=json", "src/example.py"],
+        "args": ["ruff", "check", "--no-cache", "--output-format", "json", "--", "src/example.py"],
         "cwd": "/tmp/agent-quality-mcp-.../workspace",
         "exit_code": 0,
         "stdout_truncated": false,
