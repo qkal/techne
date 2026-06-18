@@ -241,12 +241,12 @@ def _normalize_relative_path(path_text: str) -> Path:
         raise SecurityError("patch paths must not contain null bytes")
     if "\\" in path_text:
         raise SecurityError("patch paths must use forward slash separators")
+    parts = tuple(path_text.split("/"))
+    if any(part in {"", ".", ".."} for part in parts):
+        raise SecurityError("patch paths must not contain empty, dot, or dot-dot segments")
     pure = PurePosixPath(path_text)
     if pure.is_absolute():
         raise SecurityError("patch paths must be relative")
-    parts = pure.parts
-    if any(part in {"", ".", ".."} for part in parts):
-        raise SecurityError("patch paths must not contain empty, dot, or dot-dot segments")
     if any(len(part) >= 2 and part[1] == ":" and part[0].isalpha() for part in parts):
         raise SecurityError("patch paths must not contain drive prefixes")
     return Path(*parts)

@@ -249,6 +249,30 @@ def test_apply_unified_diff_rejects_traversal_paths(
         apply_unified_diff(tmp_path, [Path("x.py")], patch_text)
 
 
+@pytest.mark.parametrize("patch_path", ["b/pkg/./app.py", "b/pkg//app.py"])
+def test_apply_unified_diff_rejects_dot_and_empty_patch_path_segments(
+    tmp_path: Path,
+    patch_path: str,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "--- a/pkg/app.py",
+            f"+++ {patch_path}",
+            "@@ -1 +1 @@",
+            "-value = 1",
+            "+value = 2",
+            "",
+        ],
+    )
+
+    with pytest.raises(SecurityError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_apply_unified_diff_rejects_rename_only_patch(tmp_path: Path) -> None:
     patch_text = dedent(
         """\
