@@ -547,6 +547,12 @@ def _preflight_write_operations(writes: list[WriteOperation]) -> None:
 def _write_temp_utf8(operation: WriteOperation) -> Path:
     file_descriptor: int | None = None
     temp_path: Path | None = None
+    content = operation.content or ""
+    try:
+        content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        message = f"patch content is not valid UTF-8: {operation.relative_target.as_posix()}"
+        raise PatchApplyError(message) from exc
     try:
         file_descriptor, raw_temp_path = tempfile.mkstemp(
             prefix=f".{operation.target.name}.",
@@ -556,12 +562,12 @@ def _write_temp_utf8(operation: WriteOperation) -> Path:
         temp_path = Path(raw_temp_path)
         with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
             file_descriptor = None
-            handle.write(operation.content or "")
+            handle.write(content)
         if operation.target.exists():
             target_stat = _stat_target(operation.target, operation.relative_target)
             temp_path.chmod(stat.S_IMODE(target_stat.st_mode))
         return temp_path
-    except OSError as exc:
+    except (OSError, UnicodeEncodeError) as exc:
         if file_descriptor is not None:
             os.close(file_descriptor)
         if temp_path is not None:

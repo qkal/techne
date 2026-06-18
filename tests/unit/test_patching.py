@@ -545,6 +545,26 @@ def test_apply_unified_diff_rejects_utf8_decode_failures(tmp_path: Path) -> None
         apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
 
 
+def test_apply_unified_diff_wraps_unencodable_patch_payload(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = (
+        "--- a/pkg/app.py\n"
+        "+++ b/pkg/app.py\n"
+        "@@ -1 +1 @@\n"
+        "-value = 1\n"
+        "+value = \ud800\n"
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+    assert sorted(path.name for path in target.parent.iterdir()) == ["app.py"]
+
+
 def test_apply_unified_diff_rejects_directory_target_for_modification(
     tmp_path: Path,
 ) -> None:
