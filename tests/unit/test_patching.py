@@ -1065,6 +1065,67 @@ def test_apply_unified_diff_continues_rollback_after_restore_failure(
     assert set(remaining) - set(unresolved_backups) == {"one.py", "three.py"}
 
 
+def test_apply_unified_diff_reports_created_target_rollback_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = tmp_path / "pkg" / "existing.py"
+    created = tmp_path / "pkg" / "created.py"
+    failing = tmp_path / "pkg" / "failing.py"
+    existing.parent.mkdir()
+    existing.write_text("existing = 1\n", encoding="utf-8")
+    failing.write_text("failing = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/existing.py
+        +++ b/pkg/existing.py
+        @@ -1 +1 @@
+        -existing = 1
+        +existing = 2
+        --- /dev/null
+        +++ b/pkg/created.py
+        @@ -0,0 +1 @@
+        +created = True
+        --- a/pkg/failing.py
+        +++ b/pkg/failing.py
+        @@ -1 +1 @@
+        -failing = 1
+        +failing = 2
+        """,
+    )
+    real_replace = os.replace
+    real_unlink = Path.unlink
+    commit_failed = False
+
+    def fail_failing_commit(source: Path, destination: Path) -> None:
+        nonlocal commit_failed
+        if not commit_failed and source.name.endswith(".tmp") and destination == failing:
+            commit_failed = True
+            raise OSError("forced commit failure")
+        real_replace(source, destination)
+
+    def fail_created_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path == created:
+            raise OSError("forced unlink failure")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(os, "replace", fail_failing_commit)
+    monkeypatch.setattr(Path, "unlink", fail_created_unlink)
+
+    with pytest.raises(PatchApplyError, match="roll back.*pkg/created.py"):
+        apply_unified_diff(
+            tmp_path,
+            [Path("pkg/existing.py"), Path("pkg/created.py"), Path("pkg/failing.py")],
+            patch_text,
+        )
+    assert existing.read_text(encoding="utf-8") == "existing = 1\n"
+    assert failing.read_text(encoding="utf-8") == "failing = 1\n"
+    assert created.read_text(encoding="utf-8") == "created = True\n"
+    remaining = sorted(path.name for path in existing.parent.iterdir())
+    assert not any(name.startswith(".existing.py.") for name in remaining)
+    assert not any(name.startswith(".failing.py.") for name in remaining)
+
+
 def test_apply_unified_diff_removes_created_dirs_after_later_commit_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

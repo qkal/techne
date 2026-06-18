@@ -654,7 +654,7 @@ def _rollback_committed_writes(committed: list[CommitRecord]) -> PatchApplyError
     for record in reversed(committed):
         try:
             if record.target_written:
-                _safe_unlink(record.target)
+                _unlink_rollback_target(record.target, record.relative_target)
             if record.backup_path is not None and record.backup_path.exists():
                 _replace_path(record.backup_path, record.target, record.relative_target)
         except PatchApplyError as exc:
@@ -663,6 +663,16 @@ def _rollback_committed_writes(committed: list[CommitRecord]) -> PatchApplyError
         return None
     failed_targets = ", ".join(target.as_posix() for target, _ in failures)
     return PatchApplyError(f"failed to roll back patch writes: {failed_targets}")
+
+
+def _unlink_rollback_target(path: Path, relative_target: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        message = f"failed to remove rollback target: {relative_target.as_posix()}"
+        raise PatchApplyError(message) from exc
 
 
 def _safe_unlink(path: Path) -> None:
