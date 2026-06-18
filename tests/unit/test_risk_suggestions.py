@@ -143,3 +143,18 @@ def test_build_suggestions_groups_duplicate_missing_tool_actions() -> None:
     assert len(suggestions) == 1
     assert suggestions[0].command == ["ruff", "--version"]
     assert suggestions[0].related_diagnostic_ids == [first.id, second.id]
+
+
+def test_build_suggestions_uses_offline_uv_dry_run_command() -> None:
+    uv = diagnostic_from_message(
+        source="uv",
+        code="sync_failed",
+        message="Dependency sync failed",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+    )
+
+    suggestions = build_suggestions([uv])
+
+    assert suggestions[0].command == ["uv", "sync", "--dry-run", "--offline"]
+    assert suggestions[0].is_safe_to_run is True

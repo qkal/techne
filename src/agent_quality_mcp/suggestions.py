@@ -87,7 +87,7 @@ def _uv_suggestions(diagnostics: list[Diagnostic]) -> list[tuple[int, str, Sugge
                 description="Run a dry-run dependency sync to inspect environment issues.",
                 priority=2,
                 related_diagnostic_ids=[diagnostic.id for diagnostic in uv_diagnostics],
-                command=["uv", "sync", "--dry-run"],
+                command=["uv", "sync", "--dry-run", "--offline"],
                 is_safe_to_run=True,
             ),
         )

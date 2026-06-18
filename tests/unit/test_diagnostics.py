@@ -1,3 +1,5 @@
+import json
+
 from agent_quality_mcp.compression import compress_diagnostics
 from agent_quality_mcp.diagnostics import (
     diagnostic_from_message,
@@ -84,6 +86,32 @@ def test_diagnostic_metadata_drops_unsupported_values_for_json_serialization() -
     assert "0x" not in serialized
 
 
+def test_diagnostic_metadata_drops_non_finite_floats_for_strict_json() -> None:
+    diagnostic = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="Required tool is missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        metadata={
+            "finite": 1.5,
+            "nan": float("nan"),
+            "inf": float("inf"),
+            "negative_inf": float("-inf"),
+            "nested": {"ok": 2.5, "bad": float("nan")},
+            "items": [3.5, float("inf"), "safe"],
+        },
+    )
+
+    json.dumps(diagnostic.model_dump(), allow_nan=False)
+
+    assert diagnostic.metadata == {
+        "finite": 1.5,
+        "nested": {"ok": 2.5},
+        "items": [3.5, "safe"],
+    }
+
+
 def test_normalize_ruff_preserves_rule_fixability_and_range() -> None:
     diagnostics = normalize_ruff(
         [
@@ -123,6 +151,22 @@ def test_normalize_ruff_omits_float_coordinate_ranges() -> None:
                 "filename": "pkg/app.py",
                 "location": {"row": 1.9, "column": 1},
                 "end_location": {"row": 2, "column": 8},
+            }
+        ]
+    )
+
+    assert diagnostics[0].range is None
+
+
+def test_normalize_ruff_omits_numeric_string_coordinate_ranges() -> None:
+    diagnostics = normalize_ruff(
+        [
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/app.py",
+                "location": {"row": "1", "column": "1"},
+                "end_location": {"row": "2", "column": "8"},
             }
         ]
     )
@@ -229,6 +273,27 @@ def test_normalize_pyright_omits_float_coordinate_ranges() -> None:
                     "range": {
                         "start": {"line": 4.2, "character": 8},
                         "end": {"line": 4, "character": 12},
+                    },
+                }
+            ]
+        }
+    )
+
+    assert diagnostics[0].range is None
+
+
+def test_normalize_pyright_omits_numeric_string_coordinate_ranges() -> None:
+    diagnostics = normalize_pyright(
+        {
+            "generalDiagnostics": [
+                {
+                    "file": "pkg/app.py",
+                    "severity": "error",
+                    "message": '"str" is not assignable to "int"',
+                    "rule": "reportAssignmentType",
+                    "range": {
+                        "start": {"line": "4", "character": "8"},
+                        "end": {"line": "4", "character": "12"},
                     },
                 }
             ]

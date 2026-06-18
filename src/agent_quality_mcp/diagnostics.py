@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Literal
 
 from agent_quality_mcp.models import Diagnostic, DiagnosticRange, DiagnosticSeverity
@@ -183,8 +184,12 @@ def _canonical_metadata_dict(metadata: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _canonical_metadata(value: Any) -> Any:
-    if value is None or isinstance(value, str | int | float | bool):
+    if value is None or isinstance(value, str | bool | int):
         return value
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return _UnsupportedMetadata.VALUE
     if isinstance(value, list | tuple):
         return [
             canonical_item
@@ -304,8 +309,6 @@ def _strict_int(value: Any) -> int | None:
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.isdecimal():
-        return int(value)
     return None
 
 
