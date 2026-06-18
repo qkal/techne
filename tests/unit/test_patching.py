@@ -402,6 +402,53 @@ def test_apply_unified_diff_rejects_changed_files_mismatches(tmp_path: Path) -> 
         apply_unified_diff(tmp_path, [Path("pkg/app.py"), Path("pkg/extra.py")], patch_text)
 
 
+def test_apply_unified_diff_rejects_duplicate_patch_targets(tmp_path: Path) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("one\ntwo\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1,2 +1,2 @@
+        -one
+        +uno
+         two
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1,2 +1,2 @@
+         one
+        -two
+        +dos
+        """,
+    )
+
+    with pytest.raises((PatchApplyError, SecurityError)):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "one\ntwo\n"
+
+
+def test_apply_unified_diff_rejects_in_root_symlink_alias(
+    tmp_path: Path,
+) -> None:
+    real_target = tmp_path / "real.py"
+    real_target.write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "link.py").symlink_to(real_target)
+    patch_text = dedent(
+        """\
+        --- a/link.py
+        +++ b/link.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(SecurityError):
+        apply_unified_diff(tmp_path, [Path("link.py")], patch_text)
+    assert real_target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_apply_unified_diff_does_not_use_external_patch_commands() -> None:
     source = inspect.getsource(patching)
 

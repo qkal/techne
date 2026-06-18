@@ -63,14 +63,17 @@ def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text:
     root = shadow_root.resolve()
     file_patches = _parse_patch(patch_text)
     changed = {_normalize_relative_path(path.as_posix()) for path in changed_files}
-    targets = {_patch_target(file_patch) for file_patch in file_patches}
-    if targets != changed:
+    targets = [_patch_target(file_patch) for file_patch in file_patches]
+    if len(set(targets)) != len(targets):
+        raise PatchApplyError("patch contains duplicate file targets")
+    if set(targets) != changed:
         raise SecurityError("patch targets must exactly match changed_files")
+    target_paths = {target: _validate_literal_target(root, target) for target in targets}
 
     writes: list[tuple[Path, str | None]] = []
     for file_patch in file_patches:
         relative_target = _patch_target(file_patch)
-        target = ensure_within_directory(root, root / relative_target)
+        target = target_paths[relative_target]
         if file_patch.old_path is None:
             if target.exists():
                 raise PatchApplyError(f"target already exists: {relative_target.as_posix()}")
@@ -279,6 +282,23 @@ def _patch_target(file_patch: FilePatch) -> Path:
     if target is None:
         raise PatchApplyError("file patch cannot target /dev/null twice")
     return target
+
+
+def _validate_literal_target(root: Path, relative_target: Path) -> Path:
+    candidate = root / relative_target
+    current = root
+    for part in relative_target.parts:
+        current /= part
+        if current.is_symlink():
+            message = f"patch target must not include symlinks: {relative_target.as_posix()}"
+            raise SecurityError(message)
+        if not current.exists():
+            break
+    if candidate.exists():
+        ensure_within_directory(root, candidate)
+    else:
+        ensure_within_directory(root, candidate.parent)
+    return candidate
 
 
 def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
