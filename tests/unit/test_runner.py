@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_quality_mcp.cli.runner import CommandRunner, resolve_allowed_command
-from agent_quality_mcp.exceptions import SecurityError
+from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandConfig
 
 
@@ -74,6 +74,51 @@ def test_resolve_allowed_command_rejects_non_executable_configured_paths(
         pass
     else:
         raise AssertionError("non-executable configured command paths should be rejected")
+
+
+def test_resolve_allowed_command_ignores_relative_and_empty_path_entries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    relative_bin = workspace / "tools"
+    relative_bin.mkdir()
+    for executable in [workspace / "uv", relative_bin / "uv"]:
+        executable.write_text("", encoding="utf-8")
+        executable.chmod(0o700)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("PATH", ":tools")
+
+    try:
+        resolve_allowed_command("uv", AgentQualityConfig())
+    except ToolUnavailableError:
+        pass
+    else:
+        raise AssertionError("relative and empty PATH entries should not resolve tools")
+
+
+def test_resolve_allowed_command_uses_absolute_path_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    absolute_bin = tmp_path / "bin"
+    absolute_bin.mkdir()
+    malicious_local = workspace / "ruff"
+    malicious_relative = workspace / "tools" / "ruff"
+    malicious_relative.parent.mkdir()
+    absolute_ruff = absolute_bin / "ruff"
+    for executable in [malicious_local, malicious_relative, absolute_ruff]:
+        executable.write_text("", encoding="utf-8")
+        executable.chmod(0o700)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("PATH", f":tools:{absolute_bin}")
+
+    resolved = resolve_allowed_command("ruff", AgentQualityConfig())
+
+    assert resolved == str(absolute_ruff.resolve(strict=True))
 
 
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
@@ -157,3 +202,26 @@ def test_command_runner_records_timeout_without_raising(
     assert record.args == ["ruff", "check"]
     assert record.exit_code is None
     assert record.timed_out is True
+
+
+def test_command_runner_wraps_oserror_without_raw_exception(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_pyright = tmp_path / "pyright"
+    fake_pyright.write_text("", encoding="utf-8")
+    fake_pyright.chmod(0o700)
+    config = AgentQualityConfig(command_paths=CommandConfig(pyright=str(fake_pyright)))
+
+    def fake_run(argv: list[str], **kwargs: Any) -> CompletedProcessStub:
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    try:
+        CommandRunner(config).run("pyright", ["--outputjson"], tmp_path)
+    except ToolUnavailableError as exc:
+        assert "pyright" in str(exc)
+        assert "spawn failed" in str(exc)
+    else:
+        raise AssertionError("OSError should be wrapped as ToolUnavailableError")

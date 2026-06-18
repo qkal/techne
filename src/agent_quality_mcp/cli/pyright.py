@@ -7,6 +7,7 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Protocol
 
+from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.diagnostics import diagnostic_from_message, normalize_pyright
 from agent_quality_mcp.exceptions import ToolUnavailableError
 from agent_quality_mcp.models import (
@@ -20,7 +21,7 @@ from agent_quality_mcp.models import (
 class Runner(Protocol):
     config: AgentQualityConfig
 
-    def run(self, command: str, args: list[str], cwd: Path) -> CommandExecutionRecord: ...
+    def run_with_output(self, command: str, args: list[str], cwd: Path) -> CommandRunResult: ...
 
 
 class PyrightAdapter:
@@ -42,21 +43,23 @@ class PyrightAdapter:
         records: list[CommandExecutionRecord] = []
 
         try:
-            record = self.runner.run("pyright", ["--outputjson", *file_args], cwd)
+            result = self.runner.run_with_output("pyright", ["--outputjson", *file_args], cwd)
         except ToolUnavailableError as exc:
             diagnostics.append(_tool_unavailable("pyright", exc))
             return diagnostics, records
+        record = result.record
         records.append(record)
-        diagnostics.extend(_diagnostics_from_record(record))
+        diagnostics.extend(_diagnostics_from_result(result))
         return diagnostics, records
 
 
-def _diagnostics_from_record(record: CommandExecutionRecord) -> list[Diagnostic]:
+def _diagnostics_from_result(result: CommandRunResult) -> list[Diagnostic]:
+    record = result.record
     diagnostics = _timeout_diagnostic(record)
     if record.timed_out:
         return diagnostics
 
-    raw_text = record.stdout_preview.strip()
+    raw_text = result.stdout.strip()
     if not raw_text:
         if record.exit_code not in (0, None):
             diagnostics.append(_command_failed(record))
@@ -82,7 +85,7 @@ def _safe_path_args(cwd: Path, changed_files: list[Path]) -> tuple[list[str], li
     safe_args: list[str] = []
     diagnostics: list[Diagnostic] = []
     for path in changed_files:
-        path_arg = _path_arg(cwd, path)
+        path_arg = path.as_posix()
         if _is_safe_path_arg(path_arg) and not path_arg.startswith("-"):
             safe_args.append(path_arg)
             continue
@@ -99,17 +102,13 @@ def _safe_path_args(cwd: Path, changed_files: list[Path]) -> tuple[list[str], li
     return safe_args, diagnostics
 
 
-def _path_arg(cwd: Path, path: Path) -> str:
-    if path.is_absolute():
-        try:
-            return path.relative_to(cwd).as_posix()
-        except ValueError:
-            return path.as_posix()
-    return path.as_posix()
-
-
 def _is_safe_path_arg(path_arg: str) -> bool:
-    return path_arg != "" and all(character.isprintable() for character in path_arg)
+    path = Path(path_arg)
+    if path.is_absolute() or path_arg in {"", "."} or path_arg.startswith("-"):
+        return False
+    if ".." in path.parts:
+        return False
+    return all(character.isprintable() for character in path_arg)
 
 
 def _timeout_diagnostic(record: CommandExecutionRecord) -> list[Diagnostic]:

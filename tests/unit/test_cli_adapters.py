@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_quality_mcp.cli.pyright import PyrightAdapter
 from agent_quality_mcp.cli.ruff import RuffAdapter
+from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.cli.uv import UvAdapter
 from agent_quality_mcp.exceptions import ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandExecutionRecord, DiagnosticSeverity
@@ -13,17 +14,20 @@ from agent_quality_mcp.models import AgentQualityConfig, CommandExecutionRecord,
 class StubRunner:
     def __init__(
         self,
-        records: list[CommandExecutionRecord] | None = None,
+        records: list[CommandExecutionRecord | CommandRunResult] | None = None,
         *,
         config: AgentQualityConfig | None = None,
         unavailable: str | None = None,
     ) -> None:
         self.config = config or AgentQualityConfig()
-        self.records = list(records or [])
+        self.records = [_as_result(record) for record in records or []]
         self.calls: list[tuple[str, list[str], Path]] = []
         self.unavailable = unavailable
 
     def run(self, command: str, args: list[str], cwd: Path) -> CommandExecutionRecord:
+        return self.run_with_output(command, args, cwd).record
+
+    def run_with_output(self, command: str, args: list[str], cwd: Path) -> CommandRunResult:
         self.calls.append((command, args, cwd))
         if self.unavailable is not None:
             raise ToolUnavailableError(self.unavailable)
@@ -47,6 +51,32 @@ def _record(
         exit_code=exit_code,
         stdout_preview=stdout,
         stderr_preview=stderr,
+    )
+
+
+def _as_result(record: CommandExecutionRecord | CommandRunResult) -> CommandRunResult:
+    if isinstance(record, CommandRunResult):
+        return record
+    return CommandRunResult(
+        record=record,
+        stdout=record.stdout_preview,
+        stderr=record.stderr_preview,
+    )
+
+
+def _result(
+    command: str,
+    args: list[str],
+    cwd: Path,
+    *,
+    raw_stdout: str,
+    stdout_preview: str,
+    exit_code: int = 0,
+) -> CommandRunResult:
+    return CommandRunResult(
+        record=_record(command, args, cwd, stdout=stdout_preview, exit_code=exit_code),
+        stdout=raw_stdout,
+        stderr="",
     )
 
 
@@ -143,6 +173,84 @@ def test_ruff_adapter_converts_unavailable_tool_to_warning_diagnostic(tmp_path: 
     assert diagnostics[0].metadata == {"tool": "ruff"}
 
 
+def test_ruff_adapter_parses_full_stdout_when_record_preview_is_truncated(
+    tmp_path: Path,
+) -> None:
+    ruff_json = json.dumps(
+        [
+            {
+                "code": "F401",
+                "message": "x" * 200,
+                "filename": "pkg/app.py",
+            }
+        ]
+    )
+    runner = StubRunner(
+        [
+            _result(
+                "ruff",
+                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                raw_stdout=ruff_json,
+                stdout_preview=ruff_json[:32] + "\n[TRUNCATED]",
+                exit_code=1,
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+    )
+
+    assert len(records) == 1
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].code == "F401"
+    assert diagnostics[0].file == "pkg/app.py"
+
+
+def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [
+            Path("../outside.py"),
+            tmp_path / "absolute.py",
+            Path("--fix"),
+            Path("."),
+            Path("pkg/app.py"),
+        ],
+        "standard",
+    )
+
+    assert safe_fixes == []
+    assert len(records) == 1
+    assert runner.calls == [
+        ("ruff", ["check", "--output-format", "json", "--", "pkg/app.py"], tmp_path)
+    ]
+    unsafe_diagnostics = [
+        diagnostic for diagnostic in diagnostics if diagnostic.code == "unsafe_path"
+    ]
+    assert [diagnostic.file for diagnostic in unsafe_diagnostics] == [
+        "../outside.py",
+        str(tmp_path / "absolute.py"),
+        "--fix",
+        ".",
+    ]
+
+
 def test_pyright_adapter_quick_mode_includes_changed_files_and_parses_json(
     tmp_path: Path,
 ) -> None:
@@ -189,6 +297,42 @@ def test_pyright_adapter_quick_mode_includes_changed_files_and_parses_json(
     assert diagnostics[0].is_blocking is True
 
 
+def test_pyright_adapter_parses_full_stdout_when_record_preview_is_truncated(
+    tmp_path: Path,
+) -> None:
+    pyright_json = json.dumps(
+        {
+            "generalDiagnostics": [
+                {
+                    "file": "pkg/app.py",
+                    "severity": "error",
+                    "message": "x" * 200,
+                    "rule": "reportGeneralTypeIssues",
+                }
+            ]
+        }
+    )
+    runner = StubRunner(
+        [
+            _result(
+                "pyright",
+                ["--outputjson"],
+                tmp_path,
+                raw_stdout=pyright_json,
+                stdout_preview=pyright_json[:32] + "\n[TRUNCATED]",
+                exit_code=1,
+            )
+        ]
+    )
+
+    diagnostics, records = PyrightAdapter(runner).check(tmp_path, [], "standard")
+
+    assert len(records) == 1
+    assert diagnostics[0].source == "pyright"
+    assert diagnostics[0].code == "reportGeneralTypeIssues"
+    assert diagnostics[0].is_blocking is True
+
+
 def test_pyright_adapter_standard_mode_omits_changed_files(tmp_path: Path) -> None:
     runner = StubRunner([_record("pyright", ["--outputjson"], tmp_path, stdout="{}")])
 
@@ -229,6 +373,36 @@ def test_pyright_adapter_quick_mode_skips_option_like_paths_instead_of_running_t
     assert diagnostics[0].source == "pyright"
     assert diagnostics[0].code == "unsafe_path"
     assert diagnostics[0].file == "--stats"
+
+
+def test_pyright_adapter_quick_mode_skips_unsafe_changed_file_paths(
+    tmp_path: Path,
+) -> None:
+    runner = StubRunner([_record("pyright", ["--outputjson", "pkg/app.py"], tmp_path, stdout="{}")])
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [
+            Path("../outside.py"),
+            tmp_path / "absolute.py",
+            Path("pkg/\napp.py"),
+            Path("."),
+            Path("pkg/app.py"),
+        ],
+        "quick",
+    )
+
+    assert len(records) == 1
+    assert runner.calls == [("pyright", ["--outputjson", "pkg/app.py"], tmp_path)]
+    unsafe_diagnostics = [
+        diagnostic for diagnostic in diagnostics if diagnostic.code == "unsafe_path"
+    ]
+    assert [diagnostic.file for diagnostic in unsafe_diagnostics] == [
+        "../outside.py",
+        str(tmp_path / "absolute.py"),
+        "pkg/\napp.py",
+        ".",
+    ]
 
 
 def test_pyright_adapter_reports_invalid_json_as_warning_with_records(tmp_path: Path) -> None:
