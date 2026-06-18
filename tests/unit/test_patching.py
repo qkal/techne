@@ -906,3 +906,103 @@ def test_apply_unified_diff_preserves_deterministic_newline_behavior(
     apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
 
     assert target.read_text(encoding="utf-8") == "one\nnew"
+
+
+def test_apply_unified_diff_rejects_no_newline_marker_after_addition_before_context(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("base\nomega\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "--- a/pkg/app.py",
+            "+++ b/pkg/app.py",
+            "@@ -1,2 +1,4 @@",
+            " base",
+            "+alpha",
+            "\\ No newline at end of file",
+            " omega",
+            "+tail",
+            "",
+        ],
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "base\nomega\n"
+
+
+def test_apply_unified_diff_rejects_no_newline_marker_after_removal_before_context(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("old\nomega\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "--- a/pkg/app.py",
+            "+++ b/pkg/app.py",
+            "@@ -1,2 +1 @@",
+            "-old",
+            "\\ No newline at end of file",
+            " omega",
+            "",
+        ],
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "old\nomega\n"
+
+
+def test_apply_unified_diff_rejects_duplicate_no_newline_markers(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("old", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "--- a/pkg/app.py",
+            "+++ b/pkg/app.py",
+            "@@ -1 +1 @@",
+            "-old",
+            "\\ No newline at end of file",
+            "\\ No newline at end of file",
+            "+new",
+            "\\ No newline at end of file",
+            "",
+        ],
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_apply_unified_diff_rejects_no_newline_marker_before_hunk_line(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "--- a/pkg/app.py",
+            "+++ b/pkg/app.py",
+            "@@ -1 +1 @@",
+            "\\ No newline at end of file",
+            "-value = 1",
+            "+value = 2",
+            "",
+        ],
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "value = 1\n"

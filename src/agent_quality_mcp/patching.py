@@ -61,6 +61,16 @@ class FilePatch:
     hunks: list[Hunk]
 
 
+@dataclass
+class NoNewlineState:
+    """Tracks sides closed by no-newline markers within one file patch."""
+
+    old_closed: bool = False
+    new_closed: bool = False
+    old_marker_seen: bool = False
+    new_marker_seen: bool = False
+
+
 @dataclass(frozen=True)
 class WriteOperation:
     """A staged write or deletion for a patch target."""
@@ -166,6 +176,7 @@ def _parse_file_patch(lines: list[str], index: int) -> tuple[FilePatch, int]:
         raise PatchApplyError("renaming files is not supported")
 
     hunks: list[Hunk] = []
+    no_newline_state = NoNewlineState()
     while index < len(lines):
         line = lines[index]
         _reject_unsupported_line(line)
@@ -175,7 +186,7 @@ def _parse_file_patch(lines: list[str], index: int) -> tuple[FilePatch, int]:
             index += 1
             continue
         if line.startswith("@@"):
-            hunk, index = _parse_hunk(lines, index)
+            hunk, index = _parse_hunk(lines, index, no_newline_state)
             hunks.append(hunk)
             continue
         raise PatchApplyError(f"unsupported file patch line: {line}")
@@ -187,7 +198,11 @@ def _parse_file_patch(lines: list[str], index: int) -> tuple[FilePatch, int]:
     return file_patch, index
 
 
-def _parse_hunk(lines: list[str], index: int) -> tuple[Hunk, int]:
+def _parse_hunk(
+    lines: list[str],
+    index: int,
+    no_newline_state: NoNewlineState,
+) -> tuple[Hunk, int]:
     header = lines[index]
     match = HUNK_RE.match(header)
     if match is None:
@@ -209,12 +224,14 @@ def _parse_hunk(lines: list[str], index: int) -> tuple[Hunk, int]:
         if line.startswith(("@@", "diff --git ")) or (hunk_complete and line.startswith("--- ")):
             break
         if line == _NO_NEWLINE_MARKER:
-            _remove_trailing_newline(hunk_lines)
+            marker_kind = _remove_trailing_newline(hunk_lines)
+            _record_no_newline_marker(marker_kind, no_newline_state)
             index += 1
             continue
         if not line or line[0] not in {" ", "-", "+"}:
             raise PatchApplyError(f"malformed hunk line: {line}")
         kind = line[0]
+        _validate_no_newline_side_open(kind, no_newline_state)
         hunk_lines.append(HunkLine(kind=kind, text=f"{line[1:]}\n"))
         if kind in {" ", "-"}:
             old_seen += 1
@@ -290,12 +307,35 @@ def _validate_hunk_range(
         raise PatchApplyError(f"{side} hunk range start 0 is invalid for this file patch")
 
 
-def _remove_trailing_newline(hunk_lines: list[HunkLine]) -> None:
+def _validate_no_newline_side_open(kind: str, state: NoNewlineState) -> None:
+    if kind in {" ", "-"} and state.old_closed:
+        raise PatchApplyError("old-side hunk line appears after no-newline marker")
+    if kind in {" ", "+"} and state.new_closed:
+        raise PatchApplyError("new-side hunk line appears after no-newline marker")
+
+
+def _record_no_newline_marker(kind: str, state: NoNewlineState) -> None:
+    closes_old = kind in {" ", "-"}
+    closes_new = kind in {" ", "+"}
+    if closes_old:
+        if state.old_marker_seen:
+            raise PatchApplyError("duplicate old-side no-newline marker")
+        state.old_marker_seen = True
+        state.old_closed = True
+    if closes_new:
+        if state.new_marker_seen:
+            raise PatchApplyError("duplicate new-side no-newline marker")
+        state.new_marker_seen = True
+        state.new_closed = True
+
+
+def _remove_trailing_newline(hunk_lines: list[HunkLine]) -> str:
     if not hunk_lines:
         raise PatchApplyError("no-newline marker has no preceding hunk line")
     previous = hunk_lines[-1]
     if previous.text.endswith("\n"):
         hunk_lines[-1] = HunkLine(kind=previous.kind, text=previous.text[:-1])
+    return previous.kind
 
 
 def _parse_patch_path(line: str, prefix: str) -> Path | None:
