@@ -28,8 +28,9 @@ the currently unsupported `apply_safe_fixes` safety mode.
   Workspace-owned executables are excluded from command resolution.
 - Subprocesses run with a minimal environment: safe `PATH`, locale variables,
   `UV_NO_ENV_FILE=1`, `UV_NO_PROGRESS=1`, and `UV_OFFLINE=1` by default.
-- Command output and audit metadata are redacted for common secret patterns and
-  configured literal redaction tokens, then truncated to configured byte limits.
+- Command output is redacted for common secret patterns and configured literal
+  redaction tokens, then truncated to configured byte limits. Audit summaries
+  are redacted before they are returned.
 - Workspace copying excludes common build/cache directories and configured
   secret file patterns.
 
@@ -142,7 +143,8 @@ limits, Python file counts, discovered config file names, excluded directory
 summaries, and security decisions. Source contents are not included. Config
 string lists that may expose sensitive local details are sanitized where
 relevant, for example as `<workspace_exclusions:count=N>` or
-`<secret_file_patterns:count=N>`, and `secret_redaction_patterns` are omitted.
+`<secret_file_patterns:count=N>`, and `secret_redaction_patterns` is returned
+as an empty list.
 
 ## Tests And Checks
 
