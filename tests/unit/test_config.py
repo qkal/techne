@@ -264,6 +264,33 @@ secret_file_patterns = []
     assert "*.pem" in config.secret_file_patterns
 
 
+def test_load_config_merges_workspace_and_override_exclusions_additively(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.agent_quality_mcp]
+workspace_exclusions = ["project_cache"]
+secret_file_patterns = ["secrets.json"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(
+        tmp_path,
+        {
+            "workspace_exclusions": ["override_cache"],
+            "secret_file_patterns": [],
+        },
+    )
+
+    assert ".git" in config.workspace_exclusions
+    assert "project_cache" in config.workspace_exclusions
+    assert "override_cache" in config.workspace_exclusions
+    assert ".env" in config.secret_file_patterns
+    assert "secrets.json" in config.secret_file_patterns
+
+
 def test_load_config_reads_trusted_command_paths_from_environment(
     tmp_path: Path,
     monkeypatch: Any,

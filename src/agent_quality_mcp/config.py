@@ -42,6 +42,7 @@ DENIED_UNTRUSTED_CONFIG_FIELDS = frozenset(
     }
 )
 SAFE_UNTRUSTED_SAFETY_MODES = frozenset({"read_only", "preview_safe_fixes"})
+ADDITIVE_UNTRUSTED_LIST_FIELDS = frozenset({"workspace_exclusions", "secret_file_patterns"})
 TRUSTED_COMMAND_PATH_ENV_VARS = {
     "uv": "AGENT_QUALITY_MCP_UV",
     "ruff": "AGENT_QUALITY_MCP_RUFF",
@@ -135,6 +136,22 @@ def _ensure_builtin_list_entries(data: dict[str, Any]) -> None:
         data[field_name] = _dedupe_preserving_order([*required_values, *configured])
 
 
+def _merge_untrusted_layer(data: dict[str, Any], layer: dict[str, Any]) -> None:
+    """Merge one validated untrusted config layer into accumulated config."""
+
+    for field_name, value in layer.items():
+        if field_name not in ADDITIVE_UNTRUSTED_LIST_FIELDS:
+            data[field_name] = value
+            continue
+        if not isinstance(value, list):
+            raise ConfigurationError(f"{field_name} must be a list")
+        existing = data.get(field_name)
+        if isinstance(existing, list):
+            data[field_name] = _dedupe_preserving_order([*existing, *value])
+        else:
+            data[field_name] = list(value)
+
+
 def load_config(
     workspace_root: str | Path,
     overrides: dict[str, Any] | None = None,
@@ -145,10 +162,10 @@ def load_config(
     data: dict[str, Any] = _read_trusted_environment_config()
     pyproject_config = _read_pyproject_config(root)
     _validate_untrusted_config(pyproject_config, "workspace")
-    data.update(pyproject_config)
+    _merge_untrusted_layer(data, pyproject_config)
     if overrides:
         _validate_untrusted_config(overrides, "override")
-        data.update(overrides)
+        _merge_untrusted_layer(data, overrides)
     _ensure_builtin_list_entries(data)
     try:
         return AgentQualityConfig(**data)
