@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from mcp.server.fastmcp import FastMCP
+
+from agent_quality_mcp.tools import register_tools
 
 
-def create_app() -> Any:
-    """Create the FastMCP app.
+def create_app() -> FastMCP:
+    """Create the FastMCP app."""
 
-    Tool registration is added by the MCP tools task.
-    """
-
-    from mcp.server.fastmcp import FastMCP
-
-    return FastMCP("agent-quality-mcp")
+    app = FastMCP("agent-quality-mcp")
+    register_tools(app)
+    return app
 
 
 def main() -> None:
