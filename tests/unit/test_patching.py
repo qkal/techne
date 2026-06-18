@@ -34,6 +34,25 @@ def test_apply_unified_diff_modifies_existing_file(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "alpha\ngamma\nomega\n"
 
 
+def test_apply_unified_diff_preserves_crlf_patch_payloads(tmp_path: Path) -> None:
+    target = tmp_path / "pkg" / "app.txt"
+    target.parent.mkdir()
+    target.write_bytes(b"alpha\r\nbeta\r\nomega\r\n")
+    patch_text = (
+        "--- a/pkg/app.txt\n"
+        "+++ b/pkg/app.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " alpha\r\n"
+        "-beta\r\n"
+        "+gamma\r\n"
+        " omega\r\n"
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/app.txt")], patch_text)
+
+    assert target.read_bytes() == b"alpha\r\ngamma\r\nomega\r\n"
+
+
 def test_apply_unified_diff_preserves_existing_file_mode(tmp_path: Path) -> None:
     target = tmp_path / "pkg" / "app.py"
     target.parent.mkdir()
@@ -128,6 +147,23 @@ def test_apply_unified_diff_creates_file_with_single_line_hunk(tmp_path: Path) -
     assert (tmp_path / "pkg" / "new.py").read_text(encoding="utf-8") == "created = True\n"
 
 
+def test_apply_unified_diff_rejects_create_from_dev_null_with_nonzero_old_range(
+    tmp_path: Path,
+) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/pkg/new.py
+        @@ -1,0 +1 @@
+        +created = True
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/new.py")], patch_text)
+    assert not (tmp_path / "pkg" / "new.py").exists()
+
+
 def test_apply_unified_diff_deletes_file_to_dev_null(tmp_path: Path) -> None:
     target = tmp_path / "pkg" / "gone.py"
     target.parent.mkdir()
@@ -163,6 +199,26 @@ def test_apply_unified_diff_deletes_file_with_single_line_hunk(tmp_path: Path) -
     apply_unified_diff(tmp_path, [Path("pkg/gone.py")], patch_text)
 
     assert not target.exists()
+
+
+def test_apply_unified_diff_rejects_delete_to_dev_null_with_nonzero_new_range(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "gone.py"
+    target.parent.mkdir()
+    target.write_text("delete_me = True\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/gone.py
+        +++ /dev/null
+        @@ -1 +1,0 @@
+        -delete_me = True
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/gone.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "delete_me = True\n"
 
 
 def test_apply_unified_diff_rejects_patch_target_outside_changed_files(

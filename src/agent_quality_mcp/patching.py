@@ -135,7 +135,7 @@ def _parse_patch(patch_text: str) -> list[FilePatch]:
     if "\0" in patch_text:
         raise PatchApplyError("binary patch text is not supported")
 
-    lines = patch_text.splitlines()
+    lines = _split_patch_lines(patch_text)
     patches: list[FilePatch] = []
     index = 0
     while index < len(lines):
@@ -242,20 +242,39 @@ def _hunk_count(value: str | None) -> int:
     return int(value)
 
 
+def _split_patch_lines(patch_text: str) -> list[str]:
+    lines = patch_text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def _validate_file_hunk_ranges(file_patch: FilePatch) -> None:
     for hunk in file_patch.hunks:
-        _validate_hunk_range(
-            "old",
-            hunk.old_start,
-            hunk.old_count,
-            zero_start_allowed=file_patch.old_path is None or file_patch.new_path is not None,
-        )
-        _validate_hunk_range(
-            "new",
-            hunk.new_start,
-            hunk.new_count,
-            zero_start_allowed=file_patch.new_path is None or file_patch.old_path is not None,
-        )
+        if file_patch.old_path is None:
+            _validate_dev_null_hunk_range("old", hunk.old_start, hunk.old_count)
+        else:
+            _validate_hunk_range(
+                "old",
+                hunk.old_start,
+                hunk.old_count,
+                zero_start_allowed=file_patch.new_path is not None,
+            )
+        if file_patch.new_path is None:
+            _validate_dev_null_hunk_range("new", hunk.new_start, hunk.new_count)
+        else:
+            _validate_hunk_range(
+                "new",
+                hunk.new_start,
+                hunk.new_count,
+                zero_start_allowed=file_patch.old_path is not None,
+            )
+
+
+def _validate_dev_null_hunk_range(side: str, start: int, count: int) -> None:
+    if start == 0 and count == 0:
+        return
+    raise PatchApplyError(f"{side} /dev/null hunk range must be 0,0")
 
 
 def _validate_hunk_range(
