@@ -216,6 +216,9 @@ def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["capture_output"] is True
     assert captured["kwargs"]["text"] is True
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["errors"] == "replace"
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
     assert captured["kwargs"]["timeout"] == config.subprocess_timeout_seconds
     assert captured["kwargs"]["check"] is False
 

@@ -100,14 +100,14 @@ def test_ruff_adapter_parses_json_and_returns_diagnostics_records_and_safe_fixes
         [
             _record(
                 "ruff",
-                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
                 tmp_path,
                 stdout=ruff_json,
                 exit_code=1,
             ),
             _record(
                 "ruff",
-                ["check", "--fix", "--diff", "--", "pkg/app.py"],
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
                 tmp_path,
                 stdout=diff,
             ),
@@ -122,8 +122,8 @@ def test_ruff_adapter_parses_json_and_returns_diagnostics_records_and_safe_fixes
     )
 
     assert runner.calls == [
-        ("ruff", ["check", "--output-format", "json", "--", "pkg/app.py"], tmp_path),
-        ("ruff", ["check", "--fix", "--diff", "--", "pkg/app.py"], tmp_path),
+        ("ruff", ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"], tmp_path),
+        ("ruff", ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"], tmp_path),
     ]
     assert len(records) == 2
     assert len(diagnostics) == 1
@@ -189,7 +189,7 @@ def test_ruff_adapter_parses_full_stdout_when_record_preview_is_truncated(
         [
             _result(
                 "ruff",
-                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
                 tmp_path,
                 raw_stdout=ruff_json,
                 stdout_preview=ruff_json[:32] + "\n[TRUNCATED]",
@@ -216,7 +216,7 @@ def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
         [
             _record(
                 "ruff",
-                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
                 tmp_path,
                 stdout="[]",
             )
@@ -238,7 +238,7 @@ def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
     assert safe_fixes == []
     assert len(records) == 1
     assert runner.calls == [
-        ("ruff", ["check", "--output-format", "json", "--", "pkg/app.py"], tmp_path)
+        ("ruff", ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"], tmp_path)
     ]
     unsafe_diagnostics = [
         diagnostic for diagnostic in diagnostics if diagnostic.code == "unsafe_path"
@@ -279,7 +279,7 @@ def test_ruff_adapter_skips_symlink_escape_paths(tmp_path: Path) -> None:
         [
             _record(
                 "ruff",
-                ["check", "--output-format", "json", "--", "pkg/app.py"],
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
                 workspace,
                 stdout="[]",
             )

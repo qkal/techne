@@ -46,7 +46,13 @@ class RuffAdapter:
         if changed_files and not file_args:
             return diagnostics, records, safe_fixes
 
-        args = ["check", "--output-format", "json", *_file_args_with_delimiter(file_args)]
+        args = [
+            "check",
+            "--no-cache",
+            "--output-format",
+            "json",
+            *_file_args_with_delimiter(file_args),
+        ]
         try:
             result = self.runner.run_with_output("ruff", args, cwd)
         except ToolUnavailableError as exc:
@@ -57,7 +63,13 @@ class RuffAdapter:
         diagnostics.extend(_diagnostics_from_result(result))
 
         if preview_safe_fixes:
-            fix_args = ["check", "--fix", "--diff", *_file_args_with_delimiter(file_args)]
+            fix_args = [
+                "check",
+                "--no-cache",
+                "--fix",
+                "--diff",
+                *_file_args_with_delimiter(file_args),
+            ]
             try:
                 fix_result = self.runner.run_with_output("ruff", fix_args, cwd)
             except ToolUnavailableError as exc:
