@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_quality_mcp import audit
-from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
+from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandExecutionRecord
 
 ALLOWED_COMMANDS = {"uv", "ruff", "pyright"}
@@ -50,7 +50,7 @@ def resolve_allowed_command(
             raise SecurityError(f"Configured path for {command} must be a file")
         if not os.access(path, os.X_OK):
             raise SecurityError(f"Configured path for {command} must be executable")
-        return _resolve_executable_path(path, command)
+        return _resolve_executable_path(path, command, cwd=cwd)
 
     resolved = _resolve_from_safe_path(command, cwd)
     if resolved is None:
@@ -72,7 +72,10 @@ class CommandRunner:
     def run_with_output(self, command: str, args: list[str], cwd: Path) -> CommandRunResult:
         """Run an allowlisted command and keep raw output for internal parsing only."""
 
-        executable = resolve_allowed_command(command, self.config, cwd)
+        try:
+            executable = resolve_allowed_command(command, self.config, cwd)
+        except SecurityError as exc:
+            raise CommandExecutionError(str(exc)) from exc
         safe_env = _safe_environment(self.config, cwd)
         started_at = time.monotonic()
         try:

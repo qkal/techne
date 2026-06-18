@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_quality_mcp.cli.runner import CommandRunner, resolve_allowed_command
-from agent_quality_mcp.exceptions import SecurityError, ToolUnavailableError
+from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandConfig
 
 
@@ -180,11 +180,37 @@ def test_command_runner_passes_sanitized_child_path(
     assert captured["kwargs"]["env"]["PATH"] == str(trusted_bin.resolve(strict=True))
 
 
+def test_command_runner_rejects_configured_workspace_bound_executable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_ruff = tmp_path / "ruff"
+    fake_ruff.write_text("", encoding="utf-8")
+    fake_ruff.chmod(0o700)
+    config = AgentQualityConfig(command_paths=CommandConfig(ruff=str(fake_ruff)))
+
+    def fake_run(argv: list[str], **kwargs: Any) -> CompletedProcessStub:
+        raise AssertionError("workspace-bound configured executable should not run")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    try:
+        CommandRunner(config).run("ruff", ["check"], tmp_path)
+    except (CommandExecutionError, ToolUnavailableError):
+        pass
+    else:
+        raise AssertionError("workspace-bound configured executable should be rejected")
+
+
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    fake_uv = tmp_path / "uv"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    fake_uv = tool_dir / "uv"
     fake_uv.write_text("", encoding="utf-8")
     fake_uv.chmod(0o700)
     config = AgentQualityConfig(
@@ -209,11 +235,11 @@ def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    record = CommandRunner(config).run("uv", ["--version"], tmp_path)
+    record = CommandRunner(config).run("uv", ["--version"], workspace)
 
     assert captured["argv"] == [str(fake_uv), "--version"]
     assert captured["kwargs"]["shell"] is False
-    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["kwargs"]["cwd"] == str(workspace)
     assert captured["kwargs"]["capture_output"] is True
     assert captured["kwargs"]["text"] is True
     assert captured["kwargs"]["encoding"] == "utf-8"
@@ -235,7 +261,7 @@ def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
 
     assert record.command == "uv"
     assert record.args == ["uv", "--version"]
-    assert record.cwd == str(tmp_path)
+    assert record.cwd == str(workspace)
     assert record.exit_code == 3
     assert record.timed_out is False
     assert "internal-secret" not in record.stdout_preview
@@ -248,7 +274,11 @@ def test_command_runner_records_timeout_without_raising(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    fake_ruff = tmp_path / "ruff"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    fake_ruff = tool_dir / "ruff"
     fake_ruff.write_text("", encoding="utf-8")
     fake_ruff.chmod(0o700)
     config = AgentQualityConfig(command_paths=CommandConfig(ruff=str(fake_ruff)))
@@ -258,7 +288,7 @@ def test_command_runner_records_timeout_without_raising(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    record = CommandRunner(config).run("ruff", ["check"], tmp_path)
+    record = CommandRunner(config).run("ruff", ["check"], workspace)
 
     assert record.command == "ruff"
     assert record.args == ["ruff", "check"]
@@ -270,7 +300,11 @@ def test_command_runner_wraps_oserror_without_raw_exception(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    fake_pyright = tmp_path / "pyright"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    fake_pyright = tool_dir / "pyright"
     fake_pyright.write_text("", encoding="utf-8")
     fake_pyright.chmod(0o700)
     config = AgentQualityConfig(command_paths=CommandConfig(pyright=str(fake_pyright)))
@@ -281,7 +315,7 @@ def test_command_runner_wraps_oserror_without_raw_exception(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     try:
-        CommandRunner(config).run("pyright", ["--outputjson"], tmp_path)
+        CommandRunner(config).run("pyright", ["--outputjson"], workspace)
     except ToolUnavailableError as exc:
         assert "pyright" in str(exc)
         assert "spawn failed" in str(exc)
