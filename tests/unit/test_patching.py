@@ -147,6 +147,22 @@ def test_apply_unified_diff_creates_file_with_single_line_hunk(tmp_path: Path) -
     assert (tmp_path / "pkg" / "new.py").read_text(encoding="utf-8") == "created = True\n"
 
 
+def test_apply_unified_diff_creates_empty_file_from_dev_null(tmp_path: Path) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/pkg/empty.txt
+        @@ -0,0 +0,0 @@
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/empty.txt")], patch_text)
+
+    target = tmp_path / "pkg" / "empty.txt"
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == ""
+
+
 def test_apply_unified_diff_rejects_create_from_dev_null_with_nonzero_old_range(
     tmp_path: Path,
 ) -> None:
@@ -179,6 +195,23 @@ def test_apply_unified_diff_deletes_file_to_dev_null(tmp_path: Path) -> None:
     )
 
     apply_unified_diff(tmp_path, [Path("pkg/gone.py")], patch_text)
+
+    assert not target.exists()
+
+
+def test_apply_unified_diff_deletes_empty_file_to_dev_null(tmp_path: Path) -> None:
+    target = tmp_path / "pkg" / "empty.txt"
+    target.parent.mkdir()
+    target.write_text("", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/empty.txt
+        +++ /dev/null
+        @@ -0,0 +0,0 @@
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/empty.txt")], patch_text)
 
     assert not target.exists()
 
@@ -957,6 +990,79 @@ def test_apply_unified_diff_rolls_back_committed_writes_on_later_commit_failure(
         apply_unified_diff(tmp_path, [Path("pkg/one.py"), Path("pkg/two.py")], patch_text)
     assert first.read_text(encoding="utf-8") == "one = 1\n"
     assert second.read_text(encoding="utf-8") == "two = 1\n"
+
+
+def test_apply_unified_diff_continues_rollback_after_restore_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "pkg" / "one.py"
+    second = tmp_path / "pkg" / "two.py"
+    third = tmp_path / "pkg" / "three.py"
+    first.parent.mkdir()
+    first.write_text("one = 1\n", encoding="utf-8")
+    second.write_text("two = 1\n", encoding="utf-8")
+    third.write_text("three = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/one.py
+        +++ b/pkg/one.py
+        @@ -1 +1 @@
+        -one = 1
+        +one = 2
+        --- a/pkg/two.py
+        +++ b/pkg/two.py
+        @@ -1 +1 @@
+        -two = 1
+        +two = 2
+        --- a/pkg/three.py
+        +++ b/pkg/three.py
+        @@ -1 +1 @@
+        -three = 1
+        +three = 2
+        """,
+    )
+    real_replace = os.replace
+    commit_failed = False
+    restore_failed = False
+
+    def fail_third_commit_and_second_restore(source: Path, destination: Path) -> None:
+        nonlocal commit_failed, restore_failed
+        if not commit_failed and source.name.endswith(".tmp") and destination == third:
+            commit_failed = True
+            raise OSError("forced commit failure")
+        if (
+            commit_failed
+            and not restore_failed
+            and source.name.startswith(".two.py.")
+            and source.name.endswith(".bak")
+            and destination == second
+        ):
+            restore_failed = True
+            raise OSError("forced restore failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_third_commit_and_second_restore)
+
+    with pytest.raises(PatchApplyError, match="roll back"):
+        apply_unified_diff(
+            tmp_path,
+            [Path("pkg/one.py"), Path("pkg/two.py"), Path("pkg/three.py")],
+            patch_text,
+        )
+    assert first.read_text(encoding="utf-8") == "one = 1\n"
+    assert not second.exists()
+    assert third.read_text(encoding="utf-8") == "three = 1\n"
+    remaining = sorted(path.name for path in first.parent.iterdir())
+    unresolved_backups = [
+        name
+        for name in remaining
+        if name.startswith(".two.py.") and name.endswith(".bak")
+    ]
+    assert len(unresolved_backups) == 1
+    assert not any(name.startswith(".one.py.") for name in remaining)
+    assert not any(name.startswith(".three.py.") for name in remaining)
+    assert set(remaining) - set(unresolved_backups) == {"one.py", "three.py"}
 
 
 def test_apply_unified_diff_removes_created_dirs_after_later_commit_failure(

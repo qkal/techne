@@ -270,6 +270,7 @@ def _split_patch_lines(patch_text: str) -> list[str]:
 
 def _validate_file_hunk_ranges(file_patch: FilePatch) -> None:
     for hunk in file_patch.hunks:
+        zero_line_hunk = not hunk.lines
         if file_patch.old_path is None:
             _validate_dev_null_hunk_range("old", hunk.old_start, hunk.old_count)
         else:
@@ -278,6 +279,7 @@ def _validate_file_hunk_ranges(file_patch: FilePatch) -> None:
                 hunk.old_start,
                 hunk.old_count,
                 zero_start_allowed=file_patch.new_path is not None,
+                zero_count_allowed=zero_line_hunk,
             )
         if file_patch.new_path is None:
             _validate_dev_null_hunk_range("new", hunk.new_start, hunk.new_count)
@@ -287,6 +289,7 @@ def _validate_file_hunk_ranges(file_patch: FilePatch) -> None:
                 hunk.new_start,
                 hunk.new_count,
                 zero_start_allowed=file_patch.old_path is not None,
+                zero_count_allowed=zero_line_hunk,
             )
 
 
@@ -302,8 +305,9 @@ def _validate_hunk_range(
     count: int,
     *,
     zero_start_allowed: bool,
+    zero_count_allowed: bool,
 ) -> None:
-    if start == 0 and count == 0 and zero_start_allowed:
+    if start == 0 and count == 0 and (zero_start_allowed or zero_count_allowed):
         return
     if start == 0:
         raise PatchApplyError(f"{side} hunk range start 0 is invalid for this file patch")
@@ -595,11 +599,15 @@ def _commit_prepared_writes(prepared_writes: list[PreparedWrite]) -> None:
                     operation.relative_target,
                 )
                 record.target_written = True
-    except PatchApplyError:
-        _rollback_committed_writes(committed)
+    except PatchApplyError as exc:
+        rollback_error = _rollback_committed_writes(committed)
+        if rollback_error is not None:
+            raise rollback_error from exc
         raise
     except OSError as exc:
-        _rollback_committed_writes(committed)
+        rollback_error = _rollback_committed_writes(committed)
+        if rollback_error is not None:
+            raise rollback_error from exc
         raise PatchApplyError("failed to commit patch writes") from exc
     else:
         for record in committed:
@@ -641,12 +649,20 @@ def _replace_path(source: Path, destination: Path, relative_target: Path) -> Non
         raise PatchApplyError(message) from exc
 
 
-def _rollback_committed_writes(committed: list[CommitRecord]) -> None:
+def _rollback_committed_writes(committed: list[CommitRecord]) -> PatchApplyError | None:
+    failures: list[tuple[Path, PatchApplyError]] = []
     for record in reversed(committed):
-        if record.target_written:
-            _safe_unlink(record.target)
-        if record.backup_path is not None and record.backup_path.exists():
-            _replace_path(record.backup_path, record.target, record.relative_target)
+        try:
+            if record.target_written:
+                _safe_unlink(record.target)
+            if record.backup_path is not None and record.backup_path.exists():
+                _replace_path(record.backup_path, record.target, record.relative_target)
+        except PatchApplyError as exc:
+            failures.append((record.relative_target, exc))
+    if not failures:
+        return None
+    failed_targets = ", ".join(target.as_posix() for target, _ in failures)
+    return PatchApplyError(f"failed to roll back patch writes: {failed_targets}")
 
 
 def _safe_unlink(path: Path) -> None:
