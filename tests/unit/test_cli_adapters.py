@@ -375,6 +375,64 @@ def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
     ]
 
 
+def test_ruff_adapter_standard_mode_scopes_only_safe_python_changed_files(
+    tmp_path: Path,
+) -> None:
+    _write_changed_file(tmp_path)
+    (tmp_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("README.md"), Path("pyproject.toml"), Path("pkg/app.py")],
+        "standard",
+    )
+
+    assert diagnostics == []
+    assert safe_fixes == []
+    assert len(records) == 1
+    assert runner.calls == [
+        ("ruff", ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"], tmp_path)
+    ]
+
+
+def test_ruff_adapter_strict_mode_ignores_changed_files_and_runs_project_wide(
+    tmp_path: Path,
+) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json"],
+                tmp_path,
+                stdout="[]",
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("../outside.py"), Path("pkg/app.py")],
+        "strict",
+    )
+
+    assert diagnostics == []
+    assert safe_fixes == []
+    assert len(records) == 1
+    assert runner.calls == [("ruff", ["check", "--no-cache", "--output-format", "json"], tmp_path)]
+
+
 def test_ruff_adapter_skips_tool_when_all_changed_files_are_unsafe(tmp_path: Path) -> None:
     runner = StubRunner(
         [_record("ruff", ["check", "--output-format", "json"], tmp_path, stdout="[]")]
@@ -632,6 +690,25 @@ def test_pyright_adapter_quick_mode_skips_unsafe_changed_file_paths(
     ]
 
 
+def test_pyright_adapter_quick_mode_scopes_only_safe_python_changed_files(
+    tmp_path: Path,
+) -> None:
+    _write_changed_file(tmp_path)
+    (tmp_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    runner = StubRunner([_record("pyright", ["--outputjson", "pkg/app.py"], tmp_path, stdout="{}")])
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [Path("README.md"), Path("pyproject.toml"), Path("pkg/app.py")],
+        "quick",
+    )
+
+    assert diagnostics == []
+    assert len(records) == 1
+    assert runner.calls == [("pyright", ["--outputjson", "pkg/app.py"], tmp_path)]
+
+
 def test_pyright_adapter_quick_mode_skips_tool_when_all_changed_files_are_unsafe(
     tmp_path: Path,
 ) -> None:
@@ -749,6 +826,7 @@ def test_uv_adapter_runs_sync_locked_dry_run_when_configured(tmp_path: Path) -> 
     runner = StubRunner(
         [
             _record("uv", ["--version"], tmp_path, stdout="uv 0.8.0\n"),
+            _record("uv", ["lock", "--check"], tmp_path),
             _record("uv", ["sync", "--locked", "--dry-run"], tmp_path),
         ],
         config=AgentQualityConfig(uv_sync_dry_run=True),
@@ -757,8 +835,9 @@ def test_uv_adapter_runs_sync_locked_dry_run_when_configured(tmp_path: Path) -> 
     diagnostics, records = UvAdapter(runner).check(tmp_path, "standard")
 
     assert diagnostics == []
-    assert len(records) == 2
+    assert len(records) == 3
     assert runner.calls == [
         ("uv", ["--version"], tmp_path),
+        ("uv", ["lock", "--check"], tmp_path),
         ("uv", ["sync", "--locked", "--dry-run"], tmp_path),
     ]

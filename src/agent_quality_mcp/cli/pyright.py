@@ -89,29 +89,36 @@ def _safe_path_args(cwd: Path, changed_files: list[Path]) -> tuple[list[str], li
     diagnostics: list[Diagnostic] = []
     for path in changed_files:
         path_arg = path.as_posix()
-        if _is_safe_path_arg(cwd, path_arg) and not path_arg.startswith("-"):
+        if _has_unsafe_path_syntax(path_arg) or _is_directory_target(cwd, path_arg):
+            diagnostics.append(_unsafe_path_diagnostic(path_arg))
+            continue
+        if Path(path_arg).suffix != ".py":
+            continue
+        if _is_safe_path_arg(cwd, path_arg):
             safe_args.append(path_arg)
             continue
-        diagnostics.append(
-            diagnostic_from_message(
-                source="pyright",
-                code="unsafe_path",
-                message="Skipped unsafe changed file path",
-                severity=DiagnosticSeverity.WARNING,
-                is_blocking=False,
-                file=path_arg,
-            )
-        )
+        diagnostics.append(_unsafe_path_diagnostic(path_arg))
     return safe_args, diagnostics
+
+
+def _has_unsafe_path_syntax(path_arg: str) -> bool:
+    path = Path(path_arg)
+    return (
+        path.is_absolute()
+        or path_arg in {"", "."}
+        or path_arg.startswith("-")
+        or ".." in path.parts
+        or not all(character.isprintable() for character in path_arg)
+    )
+
+
+def _is_directory_target(cwd: Path, path_arg: str) -> bool:
+    return (cwd / Path(path_arg)).is_dir()
 
 
 def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
     path = Path(path_arg)
-    if path.is_absolute() or path_arg in {"", "."} or path_arg.startswith("-"):
-        return False
-    if ".." in path.parts:
-        return False
-    if not all(character.isprintable() for character in path_arg):
+    if _has_unsafe_path_syntax(path_arg):
         return False
     try:
         validate_changed_files(cwd, [path_arg])
@@ -121,6 +128,17 @@ def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
     if candidate.is_symlink() or not candidate.is_file():
         return False
     return True
+
+
+def _unsafe_path_diagnostic(path_arg: str) -> Diagnostic:
+    return diagnostic_from_message(
+        source="pyright",
+        code="unsafe_path",
+        message="Skipped unsafe changed file path",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file=path_arg,
+    )
 
 
 def _timeout_diagnostic(record: CommandExecutionRecord) -> list[Diagnostic]:

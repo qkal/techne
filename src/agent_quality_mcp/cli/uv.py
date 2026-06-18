@@ -46,10 +46,9 @@ class UvAdapter:
 def _commands(cwd: Path, mode: str, config: AgentQualityConfig) -> list[list[str]]:
     commands = [["--version"]]
     if mode in {"standard", "strict"} and (cwd / "pyproject.toml").is_file():
+        commands.append(["lock", "--check"])
         if config.uv_sync_dry_run:
             commands.append(["sync", "--locked", "--dry-run"])
-        else:
-            commands.append(["lock", "--check"])
     return commands
 
 
