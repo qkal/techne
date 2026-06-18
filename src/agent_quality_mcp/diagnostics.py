@@ -120,7 +120,7 @@ def _build_diagnostic(
     raw_source: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Diagnostic:
-    normalized_metadata = dict(metadata or {})
+    normalized_metadata = _canonical_metadata_dict(metadata)
     diagnostic_id = _stable_diagnostic_id(
         source=source,
         code=code,
@@ -168,11 +168,18 @@ def _stable_diagnostic_id(
         "file": file,
         "range": diagnostic_range.model_dump() if diagnostic_range is not None else None,
         "is_fixable": is_fixable,
-        "metadata": _canonical_metadata(metadata),
+        "metadata": metadata,
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
     return f"{source}-{code}-{digest}"
+
+
+def _canonical_metadata_dict(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    canonical = _canonical_metadata(metadata or {})
+    if isinstance(canonical, dict):
+        return canonical
+    return {}
 
 
 def _canonical_metadata(value: Any) -> Any:

@@ -58,6 +58,32 @@ def test_diagnostic_id_ignores_non_primitive_metadata_for_stability() -> None:
     assert first.id == second.id
 
 
+def test_diagnostic_metadata_drops_unsupported_values_for_json_serialization() -> None:
+    diagnostic = diagnostic_from_message(
+        source="system",
+        code="tool_missing",
+        message="Required tool is missing",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+        metadata={
+            "tool": "ruff",
+            "unsupported": object(),
+            "nested": {"safe": True, "unsupported": object()},
+            "items": ["safe", object(), 3],
+        },
+    )
+
+    serialized = diagnostic.model_dump_json()
+
+    assert diagnostic.metadata == {
+        "tool": "ruff",
+        "nested": {"safe": True},
+        "items": ["safe", 3],
+    }
+    assert "<object object at" not in serialized
+    assert "0x" not in serialized
+
+
 def test_normalize_ruff_preserves_rule_fixability_and_range() -> None:
     diagnostics = normalize_ruff(
         [
