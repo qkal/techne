@@ -230,6 +230,26 @@ def test_apply_unified_diff_rejects_invalid_new_side_zero_start(
     assert not (tmp_path / "pkg" / "new.py").exists()
 
 
+def test_apply_unified_diff_modifies_existing_empty_file_with_zero_old_range(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "empty.py"
+    target.parent.mkdir()
+    target.write_text("", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/empty.py
+        +++ b/pkg/empty.py
+        @@ -0,0 +1 @@
+        +value = 1
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/empty.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_apply_unified_diff_rejects_zero_old_range_for_modification(
     tmp_path: Path,
 ) -> None:
@@ -248,6 +268,46 @@ def test_apply_unified_diff_rejects_zero_old_range_for_modification(
     with pytest.raises(PatchApplyError):
         apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
     assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_empties_existing_file_with_zero_new_range(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +0,0 @@
+        -value = 1
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == ""
+
+
+def test_apply_unified_diff_rejects_zero_new_range_that_leaves_output(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("first\nsecond\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +0,0 @@
+        -first
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "first\nsecond\n"
 
 
 def test_apply_unified_diff_rejects_new_start_mismatch(

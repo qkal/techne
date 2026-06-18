@@ -217,13 +217,13 @@ def _validate_file_hunk_ranges(file_patch: FilePatch) -> None:
             "old",
             hunk.old_start,
             hunk.old_count,
-            zero_start_allowed=file_patch.old_path is None,
+            zero_start_allowed=file_patch.old_path is None or file_patch.new_path is not None,
         )
         _validate_hunk_range(
             "new",
             hunk.new_start,
             hunk.new_count,
-            zero_start_allowed=file_patch.new_path is None,
+            zero_start_allowed=file_patch.new_path is None or file_patch.old_path is not None,
         )
 
 
@@ -305,8 +305,15 @@ def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
     original_lines = original.splitlines(keepends=True)
     patched_lines: list[str] = []
     original_index = 0
+    zero_new_range_requires_empty_output = False
 
     for hunk in file_patch.hunks:
+        is_modification = file_patch.old_path is not None and file_patch.new_path is not None
+        if is_modification and hunk.old_start == 0 and original_lines:
+            raise PatchApplyError("zero old hunk range requires empty target content")
+        if is_modification and hunk.new_start == 0:
+            zero_new_range_requires_empty_output = True
+
         hunk_index = _hunk_original_index(hunk)
         if hunk_index < original_index or hunk_index > len(original_lines):
             raise PatchApplyError("hunk starts outside target content")
@@ -328,7 +335,10 @@ def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
             original_index += 1
 
     patched_lines.extend(original_lines[original_index:])
-    return "".join(patched_lines)
+    patched = "".join(patched_lines)
+    if zero_new_range_requires_empty_output and patched != "":
+        raise PatchApplyError("zero new hunk range requires empty patched content")
+    return patched
 
 
 def _hunk_original_index(hunk: Hunk) -> int:
