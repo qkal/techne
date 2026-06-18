@@ -80,7 +80,12 @@ class RuffAdapter:
             fix_record = fix_result.record
             records.append(fix_record)
             diagnostics.extend(_timeout_diagnostic(fix_record, source="ruff"))
-            if not fix_record.timed_out and fix_record.stdout_preview:
+            if fix_record.timed_out:
+                return diagnostics, records, safe_fixes
+            if fix_record.stdout_preview and _is_valid_safe_fix_preview(
+                fix_result.stdout,
+                fix_record,
+            ):
                 safe_fixes.append(
                     SafeFixPreview(
                         tool="ruff",
@@ -91,6 +96,10 @@ class RuffAdapter:
                         requires_human_review=True,
                     )
                 )
+            elif fix_record.stdout_preview:
+                diagnostics.append(_invalid_safe_fix_preview(fix_record))
+            elif fix_record.exit_code not in (0, None):
+                diagnostics.append(_command_failed(fix_record, source="ruff"))
 
         return diagnostics, records, safe_fixes
 
@@ -162,7 +171,7 @@ def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
     except (OSError, SecurityError):
         return False
     candidate = cwd / path
-    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+    if candidate.is_symlink() or not candidate.is_file():
         return False
     return True
 
@@ -192,12 +201,31 @@ def _timeout_diagnostic(
     ]
 
 
+def _is_valid_safe_fix_preview(stdout: str, record: CommandExecutionRecord) -> bool:
+    return record.exit_code == 1 and _looks_like_unified_diff(stdout)
+
+
+def _looks_like_unified_diff(text: str) -> bool:
+    return text.startswith("--- ") and "\n+++ " in text
+
+
 def _command_failed(record: CommandExecutionRecord, *, source: DiagnosticSource) -> Diagnostic:
     detail = record.stderr_preview or record.stdout_preview or f"{source} command failed"
     return diagnostic_from_message(
         source=source,
         code="command_failed",
         message=detail,
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        metadata={"exit_code": record.exit_code, "args": record.args},
+    )
+
+
+def _invalid_safe_fix_preview(record: CommandExecutionRecord) -> Diagnostic:
+    return diagnostic_from_message(
+        source="ruff",
+        code="invalid_preview",
+        message="Ruff safe-fix preview did not return a valid unified diff",
         severity=DiagnosticSeverity.WARNING,
         is_blocking=False,
         metadata={"exit_code": record.exit_code, "args": record.args},

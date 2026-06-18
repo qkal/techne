@@ -118,7 +118,7 @@ def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
     except (OSError, SecurityError):
         return False
     candidate = cwd / path
-    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+    if candidate.is_symlink() or not candidate.is_file():
         return False
     return True
 

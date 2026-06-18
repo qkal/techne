@@ -82,9 +82,16 @@ def _result(
     )
 
 
+def _write_changed_file(cwd: Path, relative_path: str = "pkg/app.py") -> None:
+    path = cwd / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("print('ok')\n", encoding="utf-8")
+
+
 def test_ruff_adapter_parses_json_and_returns_diagnostics_records_and_safe_fixes(
     tmp_path: Path,
 ) -> None:
+    _write_changed_file(tmp_path)
     ruff_json = json.dumps(
         [
             {
@@ -112,6 +119,7 @@ def test_ruff_adapter_parses_json_and_returns_diagnostics_records_and_safe_fixes
                 ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
                 tmp_path,
                 stdout=diff,
+                exit_code=1,
             ),
         ]
     )
@@ -178,6 +186,7 @@ def test_ruff_adapter_converts_unavailable_tool_to_warning_diagnostic(tmp_path: 
 def test_ruff_adapter_parses_full_stdout_when_record_preview_is_truncated(
     tmp_path: Path,
 ) -> None:
+    _write_changed_file(tmp_path)
     ruff_json = json.dumps(
         [
             {
@@ -214,6 +223,7 @@ def test_ruff_adapter_parses_full_stdout_when_record_preview_is_truncated(
 
 
 def test_ruff_adapter_skips_safe_fix_preview_after_primary_timeout(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
     runner = StubRunner(
         [
             _record(
@@ -252,6 +262,7 @@ def test_ruff_adapter_skips_safe_fix_preview_after_primary_timeout(tmp_path: Pat
 def test_ruff_adapter_ignores_timed_out_safe_fix_preview_partial_stdout(
     tmp_path: Path,
 ) -> None:
+    _write_changed_file(tmp_path)
     runner = StubRunner(
         [
             _record(
@@ -289,7 +300,42 @@ def test_ruff_adapter_ignores_timed_out_safe_fix_preview_partial_stdout(
     assert diagnostics[0].code == "timeout"
 
 
+def test_ruff_adapter_rejects_failed_non_diff_safe_fix_preview(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="[]",
+            ),
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--fix", "--diff", "--", "pkg/app.py"],
+                tmp_path,
+                stdout="not a unified diff\n",
+                exit_code=2,
+            ),
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/app.py")],
+        "standard",
+        preview_safe_fixes=True,
+    )
+
+    assert len(records) == 2
+    assert safe_fixes == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].severity == DiagnosticSeverity.WARNING
+    assert diagnostics[0].code == "invalid_preview"
+
+
 def test_ruff_adapter_skips_unsafe_changed_file_paths(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
     runner = StubRunner(
         [
             _record(
@@ -373,6 +419,32 @@ def test_ruff_adapter_rejects_directory_changed_file_targets(tmp_path: Path) -> 
     assert diagnostics[0].file == "pkg"
 
 
+def test_ruff_adapter_rejects_missing_changed_file_targets(tmp_path: Path) -> None:
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg/missing.py"],
+                tmp_path,
+                stdout="[]",
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/missing.py")],
+        "standard",
+    )
+
+    assert records == []
+    assert safe_fixes == []
+    assert runner.calls == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].code == "unsafe_path"
+    assert diagnostics[0].file == "pkg/missing.py"
+
+
 def test_ruff_adapter_skips_symlink_escape_paths(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
@@ -407,6 +479,7 @@ def test_ruff_adapter_skips_symlink_escape_paths(tmp_path: Path) -> None:
 def test_pyright_adapter_quick_mode_includes_changed_files_and_parses_json(
     tmp_path: Path,
 ) -> None:
+    _write_changed_file(tmp_path)
     pyright_json = json.dumps(
         {
             "generalDiagnostics": [
@@ -531,6 +604,7 @@ def test_pyright_adapter_quick_mode_skips_option_like_paths_instead_of_running_t
 def test_pyright_adapter_quick_mode_skips_unsafe_changed_file_paths(
     tmp_path: Path,
 ) -> None:
+    _write_changed_file(tmp_path)
     runner = StubRunner([_record("pyright", ["--outputjson", "pkg/app.py"], tmp_path, stdout="{}")])
 
     diagnostics, records = PyrightAdapter(runner).check(
@@ -591,6 +665,26 @@ def test_pyright_adapter_quick_mode_rejects_directory_changed_file_targets(
     assert diagnostics[0].source == "pyright"
     assert diagnostics[0].code == "unsafe_path"
     assert diagnostics[0].file == "pkg"
+
+
+def test_pyright_adapter_quick_mode_rejects_missing_changed_file_targets(
+    tmp_path: Path,
+) -> None:
+    runner = StubRunner(
+        [_record("pyright", ["--outputjson", "pkg/missing.py"], tmp_path, stdout="{}")]
+    )
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [Path("pkg/missing.py")],
+        "quick",
+    )
+
+    assert records == []
+    assert runner.calls == []
+    assert diagnostics[0].source == "pyright"
+    assert diagnostics[0].code == "unsafe_path"
+    assert diagnostics[0].file == "pkg/missing.py"
 
 
 def test_pyright_adapter_quick_mode_skips_symlink_escape_paths(tmp_path: Path) -> None:
