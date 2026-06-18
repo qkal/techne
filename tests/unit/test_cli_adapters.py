@@ -268,6 +268,33 @@ def test_ruff_adapter_skips_tool_when_all_changed_files_are_unsafe(tmp_path: Pat
     assert [diagnostic.code for diagnostic in diagnostics] == ["unsafe_path", "unsafe_path"]
 
 
+def test_ruff_adapter_rejects_directory_changed_file_targets(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    runner = StubRunner(
+        [
+            _record(
+                "ruff",
+                ["check", "--no-cache", "--output-format", "json", "--", "pkg"],
+                tmp_path,
+                stdout="[]",
+            )
+        ]
+    )
+
+    diagnostics, records, safe_fixes = RuffAdapter(runner).check(
+        tmp_path,
+        [Path("pkg")],
+        "standard",
+    )
+
+    assert records == []
+    assert safe_fixes == []
+    assert runner.calls == []
+    assert diagnostics[0].source == "ruff"
+    assert diagnostics[0].code == "unsafe_path"
+    assert diagnostics[0].file == "pkg"
+
+
 def test_ruff_adapter_skips_symlink_escape_paths(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
@@ -467,6 +494,25 @@ def test_pyright_adapter_quick_mode_skips_tool_when_all_changed_files_are_unsafe
     assert records == []
     assert runner.calls == []
     assert [diagnostic.code for diagnostic in diagnostics] == ["unsafe_path", "unsafe_path"]
+
+
+def test_pyright_adapter_quick_mode_rejects_directory_changed_file_targets(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pkg").mkdir()
+    runner = StubRunner([_record("pyright", ["--outputjson", "pkg"], tmp_path, stdout="{}")])
+
+    diagnostics, records = PyrightAdapter(runner).check(
+        tmp_path,
+        [Path("pkg")],
+        "quick",
+    )
+
+    assert records == []
+    assert runner.calls == []
+    assert diagnostics[0].source == "pyright"
+    assert diagnostics[0].code == "unsafe_path"
+    assert diagnostics[0].file == "pkg"
 
 
 def test_pyright_adapter_quick_mode_skips_symlink_escape_paths(tmp_path: Path) -> None:

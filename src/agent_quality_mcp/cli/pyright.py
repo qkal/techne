@@ -117,6 +117,9 @@ def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
         validate_changed_files(cwd, [path_arg])
     except (OSError, SecurityError):
         return False
+    candidate = cwd / path
+    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+        return False
     return True
 
 
