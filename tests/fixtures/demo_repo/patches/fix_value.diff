@@ -1,0 +1,6 @@
+--- a/demo_pkg/app.py
++++ b/demo_pkg/app.py
+@@ -8,2 +8,2 @@
+ def current_value() -> int:
+-    return 1
++    return 2
