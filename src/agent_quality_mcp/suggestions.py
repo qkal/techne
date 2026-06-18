@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 
 from agent_quality_mcp.models import Diagnostic, SuggestedAction
 
@@ -159,6 +160,9 @@ def _pyright_command(file: str | None) -> list[str] | None:
 
 def _has_safe_command_path_characters(file: str) -> bool:
     if file == "":
+        return False
+    path = Path(file)
+    if path.is_absolute() or ".." in path.parts:
         return False
     return all(character.isprintable() for character in file)
 

@@ -130,6 +130,72 @@ def test_validate_patch_applies_patch_in_shadow_only(tmp_path: Path, monkeypatch
     assert response.shadow_workspace_used is True
 
 
+def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    captured: dict[str, Any] = {}
+
+    class CaptureUvAdapter(CleanUvAdapter):
+        def check(
+            self,
+            cwd: Path,
+            mode: str,
+        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
+            captured["uv_mode"] = mode
+            return [], []
+
+    class CaptureRuffAdapter(CleanRuffAdapter):
+        def check(
+            self,
+            cwd: Path,
+            changed_files: list[Path],
+            mode: str,
+            preview_safe_fixes: bool = False,
+        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord], list[SafeFixPreview]]:
+            captured["ruff_mode"] = mode
+            captured["preview_safe_fixes"] = preview_safe_fixes
+            return [], [], []
+
+    class CapturePyrightAdapter(CleanPyrightAdapter):
+        def check(
+            self,
+            cwd: Path,
+            changed_files: list[Path],
+            mode: str,
+        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
+            captured["pyright_mode"] = mode
+            return [], []
+
+    monkeypatch.setattr(service_module, "UvAdapter", CaptureUvAdapter)
+    monkeypatch.setattr(service_module, "RuffAdapter", CaptureRuffAdapter)
+    monkeypatch.setattr(service_module, "PyrightAdapter", CapturePyrightAdapter)
+    monkeypatch.setattr(
+        service_module,
+        "load_config",
+        lambda workspace_root, overrides=None: AgentQualityConfig(
+            default_mode=ValidationMode.QUICK,
+            default_safety_mode=SafetyMode.PREVIEW_SAFE_FIXES,
+        ),
+    )
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.mode == ValidationMode.QUICK
+    assert response.safety_mode == SafetyMode.PREVIEW_SAFE_FIXES
+    assert captured == {
+        "uv_mode": "quick",
+        "ruff_mode": "quick",
+        "preview_safe_fixes": True,
+        "pyright_mode": "quick",
+    }
+
+
 def test_validate_patch_enforces_request_timeout(tmp_path: Path, monkeypatch: Any) -> None:
     _write_python_file(tmp_path)
     _fail_if_tools_run(monkeypatch)

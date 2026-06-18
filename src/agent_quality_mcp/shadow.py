@@ -10,7 +10,11 @@ from pathlib import Path
 from types import TracebackType
 
 from agent_quality_mcp.exceptions import SecurityError, WorkspaceError
-from agent_quality_mcp.models import AgentQualityConfig
+from agent_quality_mcp.models import (
+    DEFAULT_SECRET_FILE_PATTERNS,
+    DEFAULT_WORKSPACE_EXCLUSIONS,
+    AgentQualityConfig,
+)
 
 
 @dataclass
@@ -59,12 +63,14 @@ class ShadowWorkspaceContext:
 
 
 def _matches_secret_pattern(path: Path, config: AgentQualityConfig) -> bool:
-    return any(fnmatch.fnmatch(path.name, pattern) for pattern in config.secret_file_patterns)
+    patterns = (*DEFAULT_SECRET_FILE_PATTERNS, *tuple(config.secret_file_patterns))
+    return any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
 
 
 def _is_excluded(path: Path, root: Path, config: AgentQualityConfig) -> bool:
     relative = path.relative_to(root)
-    if any(part in set(config.workspace_exclusions) for part in relative.parts):
+    exclusions = {*DEFAULT_WORKSPACE_EXCLUSIONS, *config.workspace_exclusions}
+    if any(part in exclusions for part in relative.parts):
         return True
     return path.is_file() and _matches_secret_pattern(path, config)
 

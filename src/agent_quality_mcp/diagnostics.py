@@ -5,9 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast
 
-from agent_quality_mcp.models import Diagnostic, DiagnosticRange, DiagnosticSeverity
+from agent_quality_mcp.audit import redact_text
+from agent_quality_mcp.models import (
+    AgentQualityConfig,
+    Diagnostic,
+    DiagnosticRange,
+    DiagnosticSeverity,
+)
 
 DiagnosticSource = Literal["system", "security", "workspace", "patch", "uv", "ruff", "pyright"]
 
@@ -34,6 +41,37 @@ def diagnostic_from_message(
         file=file,
         metadata=normalized_metadata,
     )
+
+
+def sanitize_diagnostics_for_response(
+    diagnostics: list[Diagnostic],
+    config: AgentQualityConfig,
+    shadow_root: Path,
+) -> list[Diagnostic]:
+    """Redact tool diagnostics and expose only shadow-relative file paths."""
+
+    shadow_root_resolved = shadow_root.resolve()
+    sanitized: list[Diagnostic] = []
+    for diagnostic in diagnostics:
+        sanitized.append(
+            _build_diagnostic(
+                source=cast(DiagnosticSource, diagnostic.source),
+                code=redact_text(diagnostic.code, config),
+                message=redact_text(diagnostic.message, config),
+                severity=diagnostic.severity,
+                is_blocking=diagnostic.is_blocking,
+                file=_sanitize_diagnostic_file(diagnostic.file, config, shadow_root_resolved),
+                diagnostic_range=diagnostic.range,
+                is_fixable=diagnostic.is_fixable,
+                raw_source=(
+                    redact_text(diagnostic.raw_source, config)
+                    if diagnostic.raw_source is not None
+                    else None
+                ),
+                metadata=_sanitize_metadata(diagnostic.metadata, config),
+            )
+        )
+    return sanitized
 
 
 def normalize_ruff(raw: Any) -> list[Diagnostic]:
@@ -106,6 +144,59 @@ def normalize_pyright(raw: Any) -> list[Diagnostic]:
         )
 
     return diagnostics
+
+
+def _sanitize_diagnostic_file(
+    file: str | None,
+    config: AgentQualityConfig,
+    shadow_root: Path,
+) -> str | None:
+    if file is None:
+        return None
+    redacted_file = redact_text(file, config)
+    if redacted_file != file:
+        return None
+    if not file or file == "." or file.startswith("-") or not all(
+        character.isprintable() for character in file
+    ):
+        return None
+
+    path = Path(file)
+    if path.is_absolute():
+        try:
+            return path.resolve().relative_to(shadow_root).as_posix()
+        except (OSError, ValueError):
+            return None
+
+    if ".." in path.parts:
+        return None
+    try:
+        resolved = (shadow_root / path).resolve()
+        resolved.relative_to(shadow_root)
+    except (OSError, ValueError):
+        return None
+    return path.as_posix()
+
+
+def _sanitize_metadata(metadata: dict[str, Any], config: AgentQualityConfig) -> dict[str, Any]:
+    sanitized = _sanitize_metadata_value(metadata, config)
+    if isinstance(sanitized, dict):
+        return sanitized
+    return {}
+
+
+def _sanitize_metadata_value(value: Any, config: AgentQualityConfig) -> Any:
+    if isinstance(value, str):
+        return redact_text(value, config)
+    if isinstance(value, list):
+        return [_sanitize_metadata_value(item, config) for item in value]
+    if isinstance(value, dict):
+        return {
+            redact_text(key, config): _sanitize_metadata_value(item, config)
+            for key, item in value.items()
+            if isinstance(key, str)
+        }
+    return value
 
 
 def _build_diagnostic(

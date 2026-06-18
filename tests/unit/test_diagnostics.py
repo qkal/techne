@@ -1,10 +1,12 @@
 import json
+from pathlib import Path
 
 from agent_quality_mcp.compression import compress_diagnostics
 from agent_quality_mcp.diagnostics import (
     diagnostic_from_message,
     normalize_pyright,
     normalize_ruff,
+    sanitize_diagnostics_for_response,
 )
 from agent_quality_mcp.models import AgentQualityConfig, DiagnosticSeverity
 
@@ -306,6 +308,48 @@ def test_normalize_pyright_omits_numeric_string_coordinate_ranges() -> None:
 def test_normalize_pyright_rejects_malformed_top_level_without_crashing() -> None:
     assert normalize_pyright(None) == []
     assert normalize_pyright([]) == []
+
+
+def test_sanitize_diagnostics_redacts_messages_and_normalizes_shadow_paths(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    outside_root = tmp_path / "outside"
+    (shadow_root / "pkg").mkdir(parents=True)
+    outside_root.mkdir()
+    token_value = "sk-testSecret"  # noqa: S105
+    diagnostics = normalize_pyright(
+        {
+            "generalDiagnostics": [
+                {
+                    "file": str(shadow_root / "pkg" / "app.py"),
+                    "severity": "error",
+                    "message": f"Literal['{token_value}'] is not assignable",
+                    "rule": "reportAssignmentType",
+                },
+                {
+                    "file": str(outside_root / "leak.py"),
+                    "severity": "warning",
+                    "message": f"outside path contains {token_value}",
+                    "rule": "reportGeneralTypeIssues",
+                },
+            ]
+        }
+    )
+
+    sanitized = sanitize_diagnostics_for_response(
+        diagnostics,
+        AgentQualityConfig(),
+        shadow_root,
+    )
+    serialized = json.dumps([diagnostic.model_dump(mode="json") for diagnostic in sanitized])
+
+    assert sanitized[0].file == "pkg/app.py"
+    assert sanitized[1].file is None
+    assert token_value not in serialized
+    assert str(shadow_root) not in serialized
+    assert str(outside_root) not in serialized
+    assert "[REDACTED]" in sanitized[0].message
 
 
 def test_compress_diagnostics_deduplicates_non_blockers_and_truncates() -> None:

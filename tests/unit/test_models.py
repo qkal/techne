@@ -17,8 +17,8 @@ def test_validate_patch_request_generates_request_id() -> None:
     request = ValidatePatchRequest(workspace_root="/workspace/demo", changed_files=["pkg/app.py"])
 
     assert request.request_id
-    assert request.mode == ValidationMode.STANDARD
-    assert request.safety_mode == SafetyMode.READ_ONLY
+    assert request.mode is None
+    assert request.safety_mode is None
 
 
 def test_apply_safe_fixes_is_representable_for_structured_rejection() -> None:

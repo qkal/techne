@@ -911,8 +911,9 @@ def test_pyright_adapter_parses_full_stdout_when_record_preview_is_truncated(
     assert diagnostics[0].is_blocking is True
 
 
-def test_pyright_adapter_standard_mode_omits_changed_files(tmp_path: Path) -> None:
-    runner = StubRunner([_record("pyright", ["--outputjson"], tmp_path, stdout="{}")])
+def test_pyright_adapter_standard_mode_scopes_changed_python_files(tmp_path: Path) -> None:
+    _write_changed_file(tmp_path)
+    runner = StubRunner([_record("pyright", ["--outputjson", "pkg/app.py"], tmp_path, stdout="{}")])
 
     diagnostics, records = PyrightAdapter(runner).check(
         tmp_path,
@@ -922,7 +923,7 @@ def test_pyright_adapter_standard_mode_omits_changed_files(tmp_path: Path) -> No
 
     assert diagnostics == []
     assert len(records) == 1
-    assert runner.calls == [("pyright", ["--outputjson"], tmp_path)]
+    assert runner.calls == [("pyright", ["--outputjson", "pkg/app.py"], tmp_path)]
 
 
 def test_pyright_adapter_strict_mode_omits_changed_files(tmp_path: Path) -> None:

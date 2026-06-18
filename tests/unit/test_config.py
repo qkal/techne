@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from agent_quality_mcp.config import load_config
 from agent_quality_mcp.exceptions import ConfigurationError
@@ -237,8 +238,41 @@ uv_offline = true
 
     assert config.default_mode == ValidationMode.QUICK
     assert config.secret_redaction_patterns == ["internal-secret-marker"]
-    assert config.workspace_exclusions == [".git", ".venv"]
-    assert config.secret_file_patterns == [".env"]
+    assert ".git" in config.workspace_exclusions
+    assert ".venv" in config.workspace_exclusions
+    assert ".env" in config.secret_file_patterns
+
+
+def test_load_config_keeps_builtin_shadow_exclusions_when_untrusted_lists_are_empty(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.agent_quality_mcp]
+workspace_exclusions = []
+secret_file_patterns = []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path, {"workspace_exclusions": [], "secret_file_patterns": []})
+
+    assert ".git" in config.workspace_exclusions
+    assert ".venv" in config.workspace_exclusions
+    assert "__pycache__" in config.workspace_exclusions
+    assert ".env" in config.secret_file_patterns
+    assert "*.pem" in config.secret_file_patterns
+
+
+def test_load_config_reads_trusted_command_paths_from_environment(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("AGENT_QUALITY_MCP_RUFF", "/opt/tools/ruff")
+
+    config = load_config(tmp_path)
+
+    assert config.command_paths.ruff == "/opt/tools/ruff"
 
 
 def test_load_config_rejects_excessive_secret_pattern_length(tmp_path: Path) -> None:

@@ -122,6 +122,30 @@ def test_validate_patch_tool_preserves_provided_request_id(
     assert result["request_id"] == "req-test-1"
 
 
+def test_validate_patch_tool_returns_structured_error_for_invalid_request(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    def fail_if_called(request: ValidatePatchRequest) -> ValidatePatchResponse:
+        raise AssertionError("invalid requests should not reach the service")
+
+    monkeypatch.setattr(tools_module, "validate_patch_service", fail_if_called)
+
+    result = validate_patch_tool(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        mode="not-a-mode",
+        request_id="req-invalid",
+    )
+
+    assert result["request_id"] == "req-invalid"
+    assert result["status"] == "error"
+    assert result["blocking_errors"][0]["code"] == "invalid_request"
+    assert result["real_workspace_modified"] is False
+
+
 def test_inspect_workspace_tool_returns_resolved_workspace_json(tmp_path: Path) -> None:
     _write_python_file(tmp_path)
 

@@ -12,6 +12,32 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 MAX_SECRET_REDACTION_PATTERNS = 32
 MAX_SECRET_REDACTION_PATTERN_LENGTH = 500
 SECRET_REDACTION_LITERAL_METACHARS = frozenset(r"()[]{}|*+?.^$\\")
+DEFAULT_WORKSPACE_EXCLUSIONS = (
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".pyright",
+    "dist",
+    "build",
+    ".tox",
+    ".nox",
+)
+DEFAULT_SECRET_FILE_PATTERNS = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa",
+    "id_ed25519",
+)
 
 
 class ValidationMode(StrEnum):
@@ -88,27 +114,10 @@ class AgentQualityConfig(AgentQualityBaseModel):
     uv_sync_dry_run: bool = False
     preserve_shadow_workspace: bool = False
     workspace_exclusions: list[str] = Field(
-        default_factory=lambda: [
-            ".git",
-            ".hg",
-            ".svn",
-            ".venv",
-            "venv",
-            "env",
-            "node_modules",
-            "__pycache__",
-            ".pytest_cache",
-            ".ruff_cache",
-            ".mypy_cache",
-            ".pyright",
-            "dist",
-            "build",
-            ".tox",
-            ".nox",
-        ]
+        default_factory=lambda: list(DEFAULT_WORKSPACE_EXCLUSIONS)
     )
     secret_file_patterns: list[str] = Field(
-        default_factory=lambda: [".env", ".env.*", "*.pem", "*.key", "id_rsa", "id_ed25519"]
+        default_factory=lambda: list(DEFAULT_SECRET_FILE_PATTERNS)
     )
     secret_redaction_patterns: list[str] = Field(default_factory=list)
 
@@ -145,8 +154,8 @@ class ValidatePatchRequest(AgentQualityBaseModel):
     workspace_root: str
     changed_files: list[str]
     patch_unified_diff: str | None = None
-    mode: ValidationMode = ValidationMode.STANDARD
-    safety_mode: SafetyMode = SafetyMode.READ_ONLY
+    mode: ValidationMode | None = None
+    safety_mode: SafetyMode | None = None
     request_id: str = Field(default_factory=lambda: str(uuid4()))
     config_overrides: dict[str, Any] | None = None
 
@@ -302,16 +311,20 @@ class InspectWorkspaceResponse(AgentQualityBaseModel):
     security_decisions: list[str]
 
 
-def _validation_mode_or_default(mode: ValidationMode | str) -> ValidationMode:
+def _validation_mode_or_default(mode: ValidationMode | str | None) -> ValidationMode:
     """Return a validation mode, defaulting fail-closed for invalid input."""
+    if mode is None:
+        return ValidationMode.STANDARD
     try:
         return ValidationMode(mode)
     except ValueError:
         return ValidationMode.STANDARD
 
 
-def _safety_mode_or_default(safety_mode: SafetyMode | str) -> SafetyMode:
+def _safety_mode_or_default(safety_mode: SafetyMode | str | None) -> SafetyMode:
     """Return a safety mode, defaulting fail-closed for invalid input."""
+    if safety_mode is None:
+        return SafetyMode.READ_ONLY
     try:
         return SafetyMode(safety_mode)
     except ValueError:
@@ -322,8 +335,8 @@ def build_error_response(
     *,
     request_id: str,
     workspace_root: str,
-    mode: ValidationMode | str,
-    safety_mode: SafetyMode | str,
+    mode: ValidationMode | str | None,
+    safety_mode: SafetyMode | str | None,
     code: str,
     message: str,
 ) -> ValidatePatchResponse:

@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
-from agent_quality_mcp.models import InspectWorkspaceRequest, ValidatePatchRequest
+from pydantic import ValidationError
+
+from agent_quality_mcp.models import (
+    InspectWorkspaceRequest,
+    ValidatePatchRequest,
+    build_error_response,
+)
 from agent_quality_mcp.service import inspect_workspace_service, validate_patch_service
 
 
@@ -12,8 +19,8 @@ def validate_patch_tool(
     workspace_root: str,
     changed_files: list[str],
     patch_unified_diff: str | None = None,
-    mode: str = "standard",
-    safety_mode: str = "read_only",
+    mode: str | None = None,
+    safety_mode: str | None = None,
     request_id: str | None = None,
     config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -30,7 +37,17 @@ def validate_patch_tool(
     if request_id is not None:
         request_data["request_id"] = request_id
 
-    request = ValidatePatchRequest(**request_data)
+    try:
+        request = ValidatePatchRequest(**request_data)
+    except ValidationError:
+        return build_error_response(
+            request_id=request_id or str(uuid4()),
+            workspace_root=workspace_root,
+            mode=mode,
+            safety_mode=safety_mode,
+            code="invalid_request",
+            message="Invalid validate_patch request",
+        ).model_dump(mode="json")
     return validate_patch_service(request).model_dump(mode="json")
 
 

@@ -24,15 +24,17 @@ the currently unsupported `apply_safe_fixes` safety mode.
   previews without mutating the real repository.
 - Subprocesses are restricted to an allowlist of `uv`, `ruff`, and `pyright`.
   Commands are invoked with argument lists and `shell=False`.
-- Executables are resolved from safe absolute paths outside the workspace.
-  Workspace-owned executables are excluded from command resolution.
+- Executables are resolved from `PATH` or trusted server-side absolute paths
+  outside the workspace. Workspace-owned executables are excluded from command
+  resolution.
 - Subprocesses run with a minimal environment: safe `PATH`, locale variables,
   `UV_NO_ENV_FILE=1`, `UV_NO_PROGRESS=1`, and `UV_OFFLINE=1` by default.
 - Command output is redacted for common secret patterns and configured literal
   redaction tokens, then truncated to configured byte limits. Audit summaries
   are redacted before they are returned.
-- Workspace copying excludes common build/cache directories and configured
-  secret file patterns.
+- Workspace copying always excludes built-in build/cache directories and
+  secret-like files. Workspace config and request overrides can add exclusions
+  but cannot remove the built-in exclusions.
 
 ## Setup
 
@@ -74,9 +76,11 @@ Inputs:
   to touch.
 - `patch_unified_diff`: optional text unified diff. When present, patch targets
   must exactly match `changed_files`.
-- `mode`: `quick`, `standard`, or `strict`; defaults to `standard`.
+- `mode`: `quick`, `standard`, or `strict`. When omitted, the effective value
+  comes from configuration and defaults to `standard`.
 - `safety_mode`: `read_only`, `preview_safe_fixes`, or `apply_safe_fixes`.
-  `apply_safe_fixes` is rejected.
+  When omitted, the effective value comes from configuration and defaults to
+  `read_only`. `apply_safe_fixes` is rejected.
 - `request_id`: optional caller-provided request identifier.
 - `config_overrides`: optional safe overrides such as `default_mode`,
   `default_safety_mode`, `uv_offline`, `workspace_exclusions`,
@@ -172,6 +176,18 @@ configuration can only set fields that do not expand authority or resource use.
 `uv_offline=false`, command path overrides, timeout increases, workspace
 preservation, and other authority-expanding settings are rejected from untrusted
 workspace config or request overrides.
+
+Server administrators can configure absolute tool paths through trusted process
+environment variables before starting the server:
+
+```bash
+AGENT_QUALITY_MCP_UV=/opt/tools/uv
+AGENT_QUALITY_MCP_RUFF=/opt/tools/ruff
+AGENT_QUALITY_MCP_PYRIGHT=/opt/tools/pyright
+```
+
+Those paths are still validated by command resolution and must point to the
+expected allowlisted tool outside the target workspace.
 
 ## MVP Limitations
 

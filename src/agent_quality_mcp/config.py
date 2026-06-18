@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_quality_mcp.exceptions import ConfigurationError
-from agent_quality_mcp.models import AgentQualityConfig
+from agent_quality_mcp.models import (
+    DEFAULT_SECRET_FILE_PATTERNS,
+    DEFAULT_WORKSPACE_EXCLUSIONS,
+    AgentQualityConfig,
+)
 
 SAFE_UNTRUSTED_CONFIG_FIELDS = frozenset(
     {
@@ -37,6 +42,11 @@ DENIED_UNTRUSTED_CONFIG_FIELDS = frozenset(
     }
 )
 SAFE_UNTRUSTED_SAFETY_MODES = frozenset({"read_only", "preview_safe_fixes"})
+TRUSTED_COMMAND_PATH_ENV_VARS = {
+    "uv": "AGENT_QUALITY_MCP_UV",
+    "ruff": "AGENT_QUALITY_MCP_RUFF",
+    "pyright": "AGENT_QUALITY_MCP_PYRIGHT",
+}
 
 
 def _validate_untrusted_config(data: dict[str, Any], source: str) -> None:
@@ -84,6 +94,47 @@ def _read_pyproject_config(workspace_root: Path) -> dict[str, Any]:
     return config_data
 
 
+def _read_trusted_environment_config() -> dict[str, Any]:
+    """Read server-admin command path settings from the process environment."""
+
+    command_paths = {
+        tool: value
+        for tool, env_var in TRUSTED_COMMAND_PATH_ENV_VARS.items()
+        if (value := os.environ.get(env_var))
+    }
+    if not command_paths:
+        return {}
+    return {"command_paths": command_paths}
+
+
+def _dedupe_preserving_order(values: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen: set[Any] = set()
+    for value in values:
+        try:
+            if value in seen:
+                continue
+            seen.add(value)
+        except TypeError:
+            pass
+        deduped.append(value)
+    return deduped
+
+
+def _ensure_builtin_list_entries(data: dict[str, Any]) -> None:
+    """Keep mandatory shadow exclusions additive for untrusted configuration."""
+
+    required_lists = {
+        "workspace_exclusions": list(DEFAULT_WORKSPACE_EXCLUSIONS),
+        "secret_file_patterns": list(DEFAULT_SECRET_FILE_PATTERNS),
+    }
+    for field_name, required_values in required_lists.items():
+        configured = data.get(field_name)
+        if not isinstance(configured, list):
+            continue
+        data[field_name] = _dedupe_preserving_order([*required_values, *configured])
+
+
 def load_config(
     workspace_root: str | Path,
     overrides: dict[str, Any] | None = None,
@@ -91,13 +142,14 @@ def load_config(
     """Load defaults, workspace config, and validated untrusted overrides."""
 
     root = Path(workspace_root)
-    data: dict[str, Any] = {}
+    data: dict[str, Any] = _read_trusted_environment_config()
     pyproject_config = _read_pyproject_config(root)
     _validate_untrusted_config(pyproject_config, "workspace")
     data.update(pyproject_config)
     if overrides:
         _validate_untrusted_config(overrides, "override")
         data.update(overrides)
+    _ensure_builtin_list_entries(data)
     try:
         return AgentQualityConfig(**data)
     except ValidationError as exc:

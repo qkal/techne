@@ -120,6 +120,22 @@ def test_build_suggestions_never_includes_diagnostic_messages_in_commands() -> N
     assert all("--fix && rm -rf /" not in arg for arg in suggestions[0].command or [])
 
 
+def test_build_suggestions_rejects_absolute_diagnostic_paths() -> None:
+    pyright = diagnostic_from_message(
+        source="pyright",
+        code="reportAssignmentType",
+        message="Type mismatch",
+        severity=DiagnosticSeverity.ERROR,
+        is_blocking=True,
+        file="/absolute/shadow/pkg/app.py",
+    )
+
+    suggestions = build_suggestions([pyright])
+
+    assert suggestions[0].command is None
+    assert suggestions[0].is_safe_to_run is False
+
+
 def test_build_suggestions_groups_duplicate_missing_tool_actions() -> None:
     first = diagnostic_from_message(
         source="system",

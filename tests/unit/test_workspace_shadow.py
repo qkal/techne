@@ -48,6 +48,22 @@ def test_shadow_workspace_excludes_secret_and_cache_files(tmp_path: Path) -> Non
         assert shadow.real_workspace_modified is False
 
 
+def test_shadow_workspace_keeps_builtin_exclusions_when_config_lists_are_empty(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("token=secret\n", encoding="utf-8")
+    config = AgentQualityConfig(workspace_exclusions=[], secret_file_patterns=[])
+
+    with create_shadow_workspace(tmp_path, config) as shadow:
+        assert (shadow.path / "pkg" / "app.py").exists()
+        assert not (shadow.path / ".git").exists()
+        assert not (shadow.path / ".env").exists()
+
+
 def test_shadow_workspace_rejects_file_exceeding_max_file_bytes(tmp_path: Path) -> None:
     (tmp_path / "large.py").write_bytes(b"12345")
     config = AgentQualityConfig(max_changed_file_bytes=4)

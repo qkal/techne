@@ -39,10 +39,10 @@ class PyrightAdapter:
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
         file_args: list[str] = []
         diagnostics: list[Diagnostic] = []
-        if mode == "quick":
+        if mode in {"quick", "standard"}:
             file_args, diagnostics = _safe_path_args(cwd, changed_files)
         records: list[CommandExecutionRecord] = []
-        if mode == "quick" and changed_files and not file_args:
+        if mode in {"quick", "standard"} and changed_files and not file_args:
             return diagnostics, records
 
         try:

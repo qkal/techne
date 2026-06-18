@@ -6,14 +6,17 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from agent_quality_mcp.audit import AuditRecorder
+from agent_quality_mcp.audit import AuditRecorder, redact_text
 from agent_quality_mcp.cli.pyright import PyrightAdapter
 from agent_quality_mcp.cli.ruff import RuffAdapter
 from agent_quality_mcp.cli.runner import CommandRunner, resolve_allowed_command
 from agent_quality_mcp.cli.uv import UvAdapter
 from agent_quality_mcp.compression import compress_diagnostics
 from agent_quality_mcp.config import load_config
-from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.diagnostics import (
+    diagnostic_from_message,
+    sanitize_diagnostics_for_response,
+)
 from agent_quality_mcp.exceptions import (
     AgentQualityMcpError,
     CommandExecutionError,
@@ -100,6 +103,36 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
         config = load_config(workspace_root, request.config_overrides)
         active_config = config
         audit.redaction_config = config
+        effective_mode = request.mode or config.default_mode
+        effective_safety_mode = request.safety_mode or config.default_safety_mode
+        if effective_safety_mode == SafetyMode.APPLY_SAFE_FIXES:
+            audit.permission(
+                "Denied apply_safe_fixes because real workspace mutation is unsupported"
+            )
+            diagnostic = diagnostic_from_message(
+                source="security",
+                code="apply_safe_fixes_not_supported",
+                message="apply_safe_fixes is not supported; validation is read-only",
+                severity=DiagnosticSeverity.BLOCKER,
+                is_blocking=True,
+            )
+            return _final_response(
+                request=request,
+                workspace_root=resolved_root_text,
+                status=ResponseStatus.ERROR,
+                diagnostics=[diagnostic],
+                safe_fixes=[],
+                config=config,
+                audit_summary=audit.summary(),
+                started_at=started_at,
+                shadow_workspace_used=False,
+                shadow_workspace_path=None,
+                shadow_workspace_preserved=False,
+                commands=[],
+                timed_out=False,
+                patch_bytes=patch_bytes,
+                changed_file_count=len(request.changed_files),
+            )
         audit.permission("Validation will run in a shadow workspace only")
         _raise_if_timed_out(started_at, config)
         changed_files = validate_changed_files(workspace_root, request.changed_files)
@@ -124,13 +157,15 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
                 runner=runner,
                 shadow_root=shadow.path,
                 changed_files=changed_files,
-                mode=request.mode.value,
-                preview_safe_fixes=request.safety_mode == SafetyMode.PREVIEW_SAFE_FIXES,
+                mode=effective_mode.value,
+                preview_safe_fixes=effective_safety_mode == SafetyMode.PREVIEW_SAFE_FIXES,
                 timeout_check=lambda: _raise_if_timed_out(started_at, config),
             )
             diagnostics.extend(adapter_result.diagnostics)
             commands.extend(adapter_result.commands)
             safe_fixes.extend(adapter_result.safe_fixes)
+            diagnostics = sanitize_diagnostics_for_response(diagnostics, config, shadow.path)
+            safe_fixes = _sanitize_safe_fixes_for_response(safe_fixes, config)
 
         _raise_if_timed_out(started_at, config)
         compressed, context_summary = compress_diagnostics(diagnostics, config)
@@ -143,6 +178,7 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
         )
         return _response_from_parts(
             request=request,
+            config=config,
             workspace_root=resolved_root_text,
             status=status,
             diagnostics=compressed,
@@ -386,6 +422,7 @@ def _final_response(
         )
     return _response_from_parts(
         request=request,
+        config=config,
         workspace_root=workspace_root,
         status=status,
         diagnostics=compressed,
@@ -405,6 +442,7 @@ def _final_response(
 def _response_from_parts(
     *,
     request: ValidatePatchRequest,
+    config: AgentQualityConfig,
     workspace_root: str,
     status: ResponseStatus,
     diagnostics: list[Diagnostic],
@@ -424,8 +462,8 @@ def _response_from_parts(
         request_id=request.request_id,
         status=status,
         workspace_root=workspace_root,
-        mode=request.mode,
-        safety_mode=request.safety_mode,
+        mode=request.mode or config.default_mode,
+        safety_mode=request.safety_mode or config.default_safety_mode,
         real_workspace_modified=False,
         shadow_workspace_used=shadow_workspace_used,
         blocking_errors=blocking_errors,
@@ -502,6 +540,21 @@ def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
         severity=DiagnosticSeverity.BLOCKER,
         is_blocking=True,
     )
+
+
+def _sanitize_safe_fixes_for_response(
+    safe_fixes: list[SafeFixPreview],
+    config: AgentQualityConfig,
+) -> list[SafeFixPreview]:
+    return [
+        fix.model_copy(
+            update={
+                "files": [redact_text(file, config) for file in fix.files],
+                "diff_preview": redact_text(fix.diff_preview, config),
+            }
+        )
+        for fix in safe_fixes
+    ]
 
 
 def _record_error_decision(audit: AuditRecorder, exc: AgentQualityMcpError) -> None:
