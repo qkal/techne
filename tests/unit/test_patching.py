@@ -89,6 +89,21 @@ def test_apply_unified_diff_creates_file_from_dev_null(tmp_path: Path) -> None:
     )
 
 
+def test_apply_unified_diff_creates_file_with_single_line_hunk(tmp_path: Path) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/pkg/new.py
+        @@ -0,0 +1 @@
+        +created = True
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/new.py")], patch_text)
+
+    assert (tmp_path / "pkg" / "new.py").read_text(encoding="utf-8") == "created = True\n"
+
+
 def test_apply_unified_diff_deletes_file_to_dev_null(tmp_path: Path) -> None:
     target = tmp_path / "pkg" / "gone.py"
     target.parent.mkdir()
@@ -100,6 +115,24 @@ def test_apply_unified_diff_deletes_file_to_dev_null(tmp_path: Path) -> None:
         @@ -1,2 +0,0 @@
         -delete_me = True
         -value = 1
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/gone.py")], patch_text)
+
+    assert not target.exists()
+
+
+def test_apply_unified_diff_deletes_file_with_single_line_hunk(tmp_path: Path) -> None:
+    target = tmp_path / "pkg" / "gone.py"
+    target.parent.mkdir()
+    target.write_text("delete_me = True\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/gone.py
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -delete_me = True
         """,
     )
 
@@ -157,6 +190,44 @@ def test_apply_unified_diff_rejects_malformed_hunk_header(tmp_path: Path) -> Non
 
     with pytest.raises(PatchApplyError):
         apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+
+def test_apply_unified_diff_rejects_hunk_header_with_attached_garbage(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@garbage
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_invalid_new_side_zero_start(
+    tmp_path: Path,
+) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/pkg/new.py
+        @@ -0,0 +0 @@
+        +created = True
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/new.py")], patch_text)
+    assert not (tmp_path / "pkg" / "new.py").exists()
 
 
 @pytest.mark.parametrize("patch_path", ["../x.py", "b/../x.py"])

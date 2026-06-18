@@ -11,7 +11,7 @@ from agent_quality_mcp.paths import ensure_within_directory
 
 HUNK_RE = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
-    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@",
+    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@(?: .*)?$",
 )
 
 _NO_NEWLINE_MARKER = r"\ No newline at end of file"
@@ -161,6 +161,8 @@ def _parse_hunk(lines: list[str], index: int) -> tuple[Hunk, int]:
     old_count = _hunk_count(match.group("old_count"))
     new_start = int(match.group("new_start"))
     new_count = _hunk_count(match.group("new_count"))
+    _validate_hunk_range("old", old_start, old_count)
+    _validate_hunk_range("new", new_start, new_count)
     index += 1
     hunk_lines: list[HunkLine] = []
     old_seen = 0
@@ -204,6 +206,13 @@ def _hunk_count(value: str | None) -> int:
     if value is None:
         return 1
     return int(value)
+
+
+def _validate_hunk_range(side: str, start: int, count: int) -> None:
+    if start == 0 and count == 0:
+        return
+    if start == 0:
+        raise PatchApplyError(f"{side} hunk range start 0 requires count 0")
 
 
 def _remove_trailing_newline(hunk_lines: list[HunkLine]) -> None:
