@@ -375,3 +375,26 @@ def test_inspect_workspace_config_rejection_does_not_leak_raw_error(
     assert raw_value not in serialized
     assert "invalid config contains" not in serialized
     assert "Configuration rejected; safe defaults used" in response.security_decisions
+
+
+def test_inspect_workspace_sanitizes_accepted_secret_redaction_patterns(
+    tmp_path: Path,
+) -> None:
+    _write_python_file(tmp_path)
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "hidden.py").write_text("hidden = True\n", encoding="utf-8")
+    raw_value = "raw-sk-review-token"
+
+    response = inspect_workspace_service(
+        str(tmp_path),
+        config_overrides={
+            "workspace_exclusions": ["ignored"],
+            "secret_redaction_patterns": [raw_value],
+        },
+    )
+    serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
+
+    assert response.python_file_count == 1
+    assert response.config.workspace_exclusions == ["ignored"]
+    assert response.config.secret_redaction_patterns == []
+    assert raw_value not in serialized

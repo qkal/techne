@@ -227,7 +227,7 @@ def inspect_workspace_service(
 
     return InspectWorkspaceResponse(
         workspace_root=str(root),
-        config=config,
+        config=_inspect_response_config(config),
         command_availability=availability,
         resolved_command_paths=resolved_paths,
         default_limits=_default_limits(config),
@@ -571,6 +571,10 @@ def _inspect_command_availability(
         resolved_paths[tool] = resolved
         decisions.append(f"{tool} resolved to safe executable path")
     return availability, resolved_paths, decisions
+
+
+def _inspect_response_config(config: AgentQualityConfig) -> AgentQualityConfig:
+    return config.model_copy(update={"secret_redaction_patterns": []})
 
 
 def _default_limits(config: AgentQualityConfig) -> dict[str, int]:
