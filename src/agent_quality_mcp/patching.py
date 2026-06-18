@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
+import stat
+import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -57,6 +61,33 @@ class FilePatch:
     hunks: list[Hunk]
 
 
+@dataclass(frozen=True)
+class WriteOperation:
+    """A staged write or deletion for a patch target."""
+
+    target: Path
+    relative_target: Path
+    content: str | None
+
+
+@dataclass(frozen=True)
+class PreparedWrite:
+    """A write operation with any replacement content materialized."""
+
+    operation: WriteOperation
+    temp_path: Path | None
+
+
+@dataclass
+class CommitRecord:
+    """A committed filesystem step that can be rolled back."""
+
+    target: Path
+    relative_target: Path
+    backup_path: Path | None
+    target_written: bool = False
+
+
 def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text: str) -> None:
     """Apply a standard text unified diff inside a shadow workspace."""
 
@@ -71,8 +102,9 @@ def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text:
     if set(targets) != set(changed):
         raise SecurityError("patch targets must exactly match changed_files")
     target_paths = {target: _validate_literal_target(root, target) for target in targets}
+    _validate_target_collisions(root, targets, target_paths)
 
-    writes: list[tuple[Path, Path, str | None]] = []
+    writes: list[WriteOperation] = []
     for file_patch in file_patches:
         relative_target = _patch_target(file_patch)
         target = target_paths[relative_target]
@@ -84,8 +116,7 @@ def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text:
         else:
             if not target.exists():
                 raise PatchApplyError(f"target does not exist: {relative_target.as_posix()}")
-            if not target.is_file():
-                raise PatchApplyError(f"target is not a regular file: {relative_target.as_posix()}")
+            _validate_existing_patch_target(target, relative_target)
             original = _read_utf8(target)
 
         patched = _apply_file_patch(original, file_patch)
@@ -93,16 +124,11 @@ def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text:
             if patched != "":
                 message = f"deletion patch leaves content: {relative_target.as_posix()}"
                 raise PatchApplyError(message)
-            writes.append((target, relative_target, None))
+            writes.append(WriteOperation(target, relative_target, None))
         else:
-            writes.append((target, relative_target, patched))
+            writes.append(WriteOperation(target, relative_target, patched))
 
-    for target, relative_target, content in writes:
-        if content is None:
-            _delete_target(target, relative_target)
-            continue
-        _create_target_parent(target, relative_target)
-        _write_utf8(target, content)
+    _apply_write_operations(writes)
 
 
 def _parse_patch(patch_text: str) -> list[FilePatch]:
@@ -254,9 +280,11 @@ def _remove_trailing_newline(hunk_lines: list[HunkLine]) -> None:
 
 
 def _parse_patch_path(line: str, prefix: str) -> Path | None:
-    raw_path = line.removeprefix(prefix).strip()
+    raw_path = line.removeprefix(prefix)
     if "\t" in raw_path:
         raw_path = raw_path.split("\t", 1)[0]
+    if raw_path != raw_path.strip():
+        raise PatchApplyError("patch path contains unexpected leading or trailing whitespace")
     if raw_path == "/dev/null":
         return None
     if raw_path.startswith(("a/", "b/")):
@@ -306,6 +334,69 @@ def _validate_literal_target(root: Path, relative_target: Path) -> Path:
     return candidate
 
 
+def _validate_target_collisions(
+    root: Path,
+    targets: list[Path],
+    target_paths: dict[Path, Path],
+) -> None:
+    existing_targets: dict[tuple[int, int], Path] = {}
+    planned_creates: dict[tuple[tuple[int, int], tuple[str, ...], str], Path] = {}
+    for relative_target in targets:
+        target = target_paths[relative_target]
+        if target.exists():
+            target_stat = _stat_target(target, relative_target)
+            key = (target_stat.st_dev, target_stat.st_ino)
+            previous = existing_targets.get(key)
+            if previous is not None:
+                raise SecurityError("patch targets must not resolve to the same file")
+            existing_targets[key] = relative_target
+            continue
+
+        key = _planned_create_collision_key(root, target)
+        previous = planned_creates.get(key)
+        if previous is not None:
+            raise SecurityError("planned creates must not collide by normalized name")
+        planned_creates[key] = relative_target
+
+
+def _planned_create_collision_key(
+    root: Path,
+    target: Path,
+) -> tuple[tuple[int, int], tuple[str, ...], str]:
+    existing_parent = target.parent
+    missing_parts: list[str] = []
+    while not existing_parent.exists():
+        missing_parts.append(_normalized_name(existing_parent.name))
+        existing_parent = existing_parent.parent
+    if not existing_parent.is_relative_to(root):
+        raise SecurityError("patch target parent must remain inside shadow root")
+    parent_stat = _stat_target(existing_parent, Path("."))
+    return (
+        (parent_stat.st_dev, parent_stat.st_ino),
+        tuple(reversed(missing_parts)),
+        _normalized_name(target.name),
+    )
+
+
+def _normalized_name(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _validate_existing_patch_target(target: Path, relative_target: Path) -> None:
+    target_stat = _stat_target(target, relative_target)
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise PatchApplyError(f"target is not a regular file: {relative_target.as_posix()}")
+    if target_stat.st_nlink > 1:
+        raise SecurityError(f"patch target must not be a hard link: {relative_target.as_posix()}")
+
+
+def _stat_target(target: Path, relative_target: Path) -> os.stat_result:
+    try:
+        return target.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise PatchApplyError(f"failed to inspect target: {relative_target.as_posix()}") from exc
+
+
 def _validate_target_parent(target: Path, relative_target: Path) -> None:
     existing = target.parent
     while not existing.exists():
@@ -322,11 +413,122 @@ def _create_target_parent(target: Path, relative_target: Path) -> None:
         raise PatchApplyError(message) from exc
 
 
-def _delete_target(target: Path, relative_target: Path) -> None:
+def _apply_write_operations(writes: list[WriteOperation]) -> None:
+    _preflight_write_operations(writes)
+    prepared: list[PreparedWrite] = []
     try:
-        target.unlink()
+        for operation in writes:
+            temp_path = None
+            if operation.content is not None:
+                _create_target_parent(operation.target, operation.relative_target)
+                temp_path = _write_temp_utf8(operation)
+            prepared.append(PreparedWrite(operation, temp_path))
+        _commit_prepared_writes(prepared)
+    finally:
+        for prepared_write in prepared:
+            if prepared_write.temp_path is not None:
+                _safe_unlink(prepared_write.temp_path)
+
+
+def _preflight_write_operations(writes: list[WriteOperation]) -> None:
+    for operation in writes:
+        _validate_target_parent(operation.target, operation.relative_target)
+        if operation.target.exists():
+            _validate_existing_patch_target(operation.target, operation.relative_target)
+
+
+def _write_temp_utf8(operation: WriteOperation) -> Path:
+    file_descriptor: int | None = None
+    temp_path: Path | None = None
+    try:
+        file_descriptor, raw_temp_path = tempfile.mkstemp(
+            prefix=f".{operation.target.name}.",
+            suffix=".tmp",
+            dir=operation.target.parent,
+        )
+        temp_path = Path(raw_temp_path)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
+            file_descriptor = None
+            handle.write(operation.content or "")
+        return temp_path
     except OSError as exc:
-        raise PatchApplyError(f"failed to delete target: {relative_target.as_posix()}") from exc
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if temp_path is not None:
+            _safe_unlink(temp_path)
+        message = f"failed to write temporary target: {operation.relative_target.as_posix()}"
+        raise PatchApplyError(message) from exc
+
+
+def _commit_prepared_writes(prepared_writes: list[PreparedWrite]) -> None:
+    committed: list[CommitRecord] = []
+    try:
+        for prepared_write in prepared_writes:
+            operation = prepared_write.operation
+            backup_path = None
+            if operation.target.exists():
+                backup_path = _backup_path(operation.target)
+                _replace_path(operation.target, backup_path, operation.relative_target)
+            record = CommitRecord(operation.target, operation.relative_target, backup_path)
+            committed.append(record)
+            if prepared_write.temp_path is not None:
+                _replace_path(
+                    prepared_write.temp_path,
+                    operation.target,
+                    operation.relative_target,
+                )
+                record.target_written = True
+    except PatchApplyError:
+        _rollback_committed_writes(committed)
+        raise
+    except OSError as exc:
+        _rollback_committed_writes(committed)
+        raise PatchApplyError("failed to commit patch writes") from exc
+    else:
+        for record in committed:
+            if record.backup_path is not None:
+                _safe_unlink(record.backup_path)
+
+
+def _backup_path(target: Path) -> Path:
+    file_descriptor: int | None = None
+    try:
+        file_descriptor, raw_backup_path = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".bak",
+            dir=target.parent,
+        )
+        return Path(raw_backup_path)
+    except OSError as exc:
+        raise PatchApplyError(f"failed to create backup for target: {target}") from exc
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+
+
+def _replace_path(source: Path, destination: Path, relative_target: Path) -> None:
+    try:
+        os.replace(source, destination)
+    except OSError as exc:
+        message = f"failed to replace target: {relative_target.as_posix()}"
+        raise PatchApplyError(message) from exc
+
+
+def _rollback_committed_writes(committed: list[CommitRecord]) -> None:
+    for record in reversed(committed):
+        if record.target_written:
+            _safe_unlink(record.target)
+        if record.backup_path is not None and record.backup_path.exists():
+            _replace_path(record.backup_path, record.target, record.relative_target)
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
 
 
 def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
@@ -416,11 +618,3 @@ def _read_utf8(path: Path) -> str:
         raise PatchApplyError(f"target is not valid UTF-8: {path}") from exc
     except OSError as exc:
         raise PatchApplyError(f"failed to read target: {path}") from exc
-
-
-def _write_utf8(path: Path, content: str) -> None:
-    try:
-        with path.open("w", encoding="utf-8", newline="") as handle:
-            handle.write(content)
-    except OSError as exc:
-        raise PatchApplyError(f"failed to write target: {path}") from exc

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 from pathlib import Path
 from textwrap import dedent
 
@@ -203,6 +204,27 @@ def test_apply_unified_diff_rejects_hunk_header_with_attached_garbage(
         --- a/pkg/app.py
         +++ b/pkg/app.py
         @@ -1 +1 @@garbage
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_path_header_with_extra_space(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++  b/pkg/app.py
+        @@ -1 +1 @@
         -value = 1
         +value = 2
         """,
@@ -521,6 +543,33 @@ def test_apply_unified_diff_rejects_targets_that_escape_shadow_root(
     assert outside.read_text(encoding="utf-8") == "value = 1\n"
 
 
+def test_apply_unified_diff_rejects_hard_link_target_outside_shadow_root(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    target = shadow_root / "pkg" / "app.py"
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.py"
+    outside.write_text("value = 1\n", encoding="utf-8")
+    try:
+        os.link(outside, target)
+    except OSError as exc:
+        pytest.skip(f"hard links are not available: {exc}")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises((PatchApplyError, SecurityError)):
+        apply_unified_diff(shadow_root, [Path("pkg/app.py")], patch_text)
+    assert outside.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_apply_unified_diff_rejects_changed_files_mismatches(tmp_path: Path) -> None:
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "app.py").write_text("value = 1\n", encoding="utf-8")
@@ -561,6 +610,57 @@ def test_apply_unified_diff_rejects_duplicate_changed_files_entries(
             patch_text,
         )
     assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_existing_case_alias_targets(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "Case.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    alias = tmp_path / "pkg" / "case.py"
+    if not alias.exists() or not target.samefile(alias):
+        pytest.skip("filesystem is case-sensitive")
+    patch_text = dedent(
+        """\
+        --- a/pkg/Case.py
+        +++ b/pkg/Case.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        --- a/pkg/case.py
+        +++ b/pkg/case.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 3
+        """,
+    )
+
+    with pytest.raises((PatchApplyError, SecurityError)):
+        apply_unified_diff(tmp_path, [Path("pkg/Case.py"), Path("pkg/case.py")], patch_text)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rejects_casefold_colliding_creates(
+    tmp_path: Path,
+) -> None:
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/pkg/Case.py
+        @@ -0,0 +1 @@
+        +value = 1
+        --- /dev/null
+        +++ b/pkg/case.py
+        @@ -0,0 +1 @@
+        +value = 2
+        """,
+    )
+
+    with pytest.raises((PatchApplyError, SecurityError)):
+        apply_unified_diff(tmp_path, [Path("pkg/Case.py"), Path("pkg/case.py")], patch_text)
+    assert not (tmp_path / "pkg" / "Case.py").exists()
+    assert not (tmp_path / "pkg" / "case.py").exists()
 
 
 def test_apply_unified_diff_rejects_duplicate_patch_targets(tmp_path: Path) -> None:
@@ -608,6 +708,47 @@ def test_apply_unified_diff_rejects_in_root_symlink_alias(
     with pytest.raises(SecurityError):
         apply_unified_diff(tmp_path, [Path("link.py")], patch_text)
     assert real_target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_apply_unified_diff_rolls_back_committed_writes_on_later_commit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "pkg" / "one.py"
+    second = tmp_path / "pkg" / "two.py"
+    first.parent.mkdir()
+    first.write_text("one = 1\n", encoding="utf-8")
+    second.write_text("two = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/one.py
+        +++ b/pkg/one.py
+        @@ -1 +1 @@
+        -one = 1
+        +one = 2
+        --- a/pkg/two.py
+        +++ b/pkg/two.py
+        @@ -1 +1 @@
+        -two = 1
+        +two = 2
+        """,
+    )
+    real_replace = os.replace
+    failed = False
+
+    def fail_second_commit(source: Path, destination: Path) -> None:
+        nonlocal failed
+        if not failed and destination == second:
+            failed = True
+            raise OSError("forced replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_second_commit)
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/one.py"), Path("pkg/two.py")], patch_text)
+    assert first.read_text(encoding="utf-8") == "one = 1\n"
+    assert second.read_text(encoding="utf-8") == "two = 1\n"
 
 
 def test_apply_unified_diff_does_not_use_external_patch_commands() -> None:
