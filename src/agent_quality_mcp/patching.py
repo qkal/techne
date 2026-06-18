@@ -62,25 +62,30 @@ def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text:
 
     root = shadow_root.resolve()
     file_patches = _parse_patch(patch_text)
-    changed = {_normalize_relative_path(path.as_posix()) for path in changed_files}
+    changed = [_normalize_relative_path(path.as_posix()) for path in changed_files]
+    if len(set(changed)) != len(changed):
+        raise PatchApplyError("changed_files contains duplicate file targets")
     targets = [_patch_target(file_patch) for file_patch in file_patches]
     if len(set(targets)) != len(targets):
         raise PatchApplyError("patch contains duplicate file targets")
-    if set(targets) != changed:
+    if set(targets) != set(changed):
         raise SecurityError("patch targets must exactly match changed_files")
     target_paths = {target: _validate_literal_target(root, target) for target in targets}
 
-    writes: list[tuple[Path, str | None]] = []
+    writes: list[tuple[Path, Path, str | None]] = []
     for file_patch in file_patches:
         relative_target = _patch_target(file_patch)
         target = target_paths[relative_target]
         if file_patch.old_path is None:
             if target.exists():
                 raise PatchApplyError(f"target already exists: {relative_target.as_posix()}")
+            _validate_target_parent(target, relative_target)
             original = ""
         else:
             if not target.exists():
                 raise PatchApplyError(f"target does not exist: {relative_target.as_posix()}")
+            if not target.is_file():
+                raise PatchApplyError(f"target is not a regular file: {relative_target.as_posix()}")
             original = _read_utf8(target)
 
         patched = _apply_file_patch(original, file_patch)
@@ -88,15 +93,15 @@ def apply_unified_diff(shadow_root: Path, changed_files: list[Path], patch_text:
             if patched != "":
                 message = f"deletion patch leaves content: {relative_target.as_posix()}"
                 raise PatchApplyError(message)
-            writes.append((target, None))
+            writes.append((target, relative_target, None))
         else:
-            writes.append((target, patched))
+            writes.append((target, relative_target, patched))
 
-    for target, content in writes:
+    for target, relative_target, content in writes:
         if content is None:
-            target.unlink()
+            _delete_target(target, relative_target)
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _create_target_parent(target, relative_target)
         _write_utf8(target, content)
 
 
@@ -301,25 +306,42 @@ def _validate_literal_target(root: Path, relative_target: Path) -> Path:
     return candidate
 
 
+def _validate_target_parent(target: Path, relative_target: Path) -> None:
+    existing = target.parent
+    while not existing.exists():
+        existing = existing.parent
+    if not existing.is_dir():
+        raise PatchApplyError(f"target parent is not a directory: {relative_target.as_posix()}")
+
+
+def _create_target_parent(target: Path, relative_target: Path) -> None:
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        message = f"failed to create target parent: {relative_target.as_posix()}"
+        raise PatchApplyError(message) from exc
+
+
+def _delete_target(target: Path, relative_target: Path) -> None:
+    try:
+        target.unlink()
+    except OSError as exc:
+        raise PatchApplyError(f"failed to delete target: {relative_target.as_posix()}") from exc
+
+
 def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
     original_lines = original.splitlines(keepends=True)
     patched_lines: list[str] = []
     original_index = 0
-    zero_new_range_requires_empty_output = False
 
     for hunk in file_patch.hunks:
-        is_modification = file_patch.old_path is not None and file_patch.new_path is not None
-        if is_modification and hunk.old_start == 0 and original_lines:
-            raise PatchApplyError("zero old hunk range requires empty target content")
-        if is_modification and hunk.new_start == 0:
-            zero_new_range_requires_empty_output = True
-
-        hunk_index = _hunk_original_index(hunk)
-        if hunk_index < original_index or hunk_index > len(original_lines):
-            raise PatchApplyError("hunk starts outside target content")
+        hunk_index = _hunk_original_index(
+            hunk,
+            original_index=original_index,
+            original_line_count=len(original_lines),
+            patched_line_count=len(patched_lines),
+        )
         patched_lines.extend(original_lines[original_index:hunk_index])
-        if _hunk_new_index(hunk) != len(patched_lines):
-            raise PatchApplyError("hunk new range does not match patched output position")
         original_index = hunk_index
 
         for hunk_line in hunk.lines:
@@ -335,20 +357,40 @@ def _apply_file_patch(original: str, file_patch: FilePatch) -> str:
             original_index += 1
 
     patched_lines.extend(original_lines[original_index:])
-    patched = "".join(patched_lines)
-    if zero_new_range_requires_empty_output and patched != "":
-        raise PatchApplyError("zero new hunk range requires empty patched content")
-    return patched
+    return "".join(patched_lines)
 
 
-def _hunk_original_index(hunk: Hunk) -> int:
+def _hunk_original_index(
+    hunk: Hunk,
+    *,
+    original_index: int,
+    original_line_count: int,
+    patched_line_count: int,
+) -> int:
+    new_index = _hunk_new_index(hunk)
+    has_in_bounds_candidate = False
+    for candidate in _hunk_original_index_candidates(hunk):
+        if candidate < original_index or candidate > original_line_count:
+            continue
+        has_in_bounds_candidate = True
+        patched_position = patched_line_count + candidate - original_index
+        if patched_position == new_index:
+            return candidate
+    if not has_in_bounds_candidate:
+        raise PatchApplyError("hunk starts outside target content")
+    raise PatchApplyError("hunk new range does not match patched output position")
+
+
+def _hunk_original_index_candidates(hunk: Hunk) -> tuple[int, ...]:
     if hunk.old_start == 0:
         if hunk.old_count != 0:
             raise PatchApplyError("zero hunk start requires zero old line count")
-        return 0
+        return (0,)
     if hunk.old_count == 0:
-        return hunk.old_start
-    return hunk.old_start - 1
+        if hunk.new_count > 0:
+            return (hunk.old_start - 1, hunk.old_start)
+        return (hunk.old_start,)
+    return (hunk.old_start - 1,)
 
 
 def _hunk_new_index(hunk: Hunk) -> int:
@@ -372,8 +414,13 @@ def _read_utf8(path: Path) -> str:
             return handle.read()
     except UnicodeDecodeError as exc:
         raise PatchApplyError(f"target is not valid UTF-8: {path}") from exc
+    except OSError as exc:
+        raise PatchApplyError(f"failed to read target: {path}") from exc
 
 
 def _write_utf8(path: Path, content: str) -> None:
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(content)
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+    except OSError as exc:
+        raise PatchApplyError(f"failed to write target: {path}") from exc

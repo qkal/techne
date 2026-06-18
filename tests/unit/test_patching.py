@@ -250,7 +250,7 @@ def test_apply_unified_diff_modifies_existing_empty_file_with_zero_old_range(
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
-def test_apply_unified_diff_rejects_zero_old_range_for_modification(
+def test_apply_unified_diff_inserts_before_first_line_with_zero_old_start(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "pkg" / "app.py"
@@ -265,9 +265,29 @@ def test_apply_unified_diff_rejects_zero_old_range_for_modification(
         """,
     )
 
-    with pytest.raises(PatchApplyError):
-        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
-    assert target.read_text(encoding="utf-8") == "value = 1\n"
+    apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "value = 2\nvalue = 1\n"
+
+
+def test_apply_unified_diff_inserts_before_first_line_with_bsd_zero_count_range(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1,0 +1 @@
+        +value = 2
+        """,
+    )
+
+    apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "value = 2\nvalue = 1\n"
 
 
 def test_apply_unified_diff_empties_existing_file_with_zero_new_range(
@@ -290,7 +310,7 @@ def test_apply_unified_diff_empties_existing_file_with_zero_new_range(
     assert target.read_text(encoding="utf-8") == ""
 
 
-def test_apply_unified_diff_rejects_zero_new_range_that_leaves_output(
+def test_apply_unified_diff_deletes_first_line_with_zero_new_range(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "pkg" / "app.py"
@@ -305,9 +325,9 @@ def test_apply_unified_diff_rejects_zero_new_range_that_leaves_output(
         """,
     )
 
-    with pytest.raises(PatchApplyError):
-        apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
-    assert target.read_text(encoding="utf-8") == "first\nsecond\n"
+    apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
+
+    assert target.read_text(encoding="utf-8") == "second\n"
 
 
 def test_apply_unified_diff_rejects_new_start_mismatch(
@@ -424,6 +444,62 @@ def test_apply_unified_diff_rejects_utf8_decode_failures(tmp_path: Path) -> None
         apply_unified_diff(tmp_path, [Path("pkg/app.py")], patch_text)
 
 
+def test_apply_unified_diff_rejects_directory_target_for_modification(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg"
+    target.mkdir()
+    patch_text = dedent(
+        """\
+        --- a/pkg
+        +++ b/pkg
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg")], patch_text)
+    assert target.is_dir()
+
+
+def test_apply_unified_diff_rejects_directory_target_for_deletion(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pkg"
+    target.mkdir()
+    patch_text = dedent(
+        """\
+        --- a/pkg
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -value = 1
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg")], patch_text)
+    assert target.is_dir()
+
+
+def test_apply_unified_diff_rejects_create_under_file_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "pkg"
+    parent.write_text("not a directory\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- /dev/null
+        +++ b/pkg/new.py
+        @@ -0,0 +1 @@
+        +created = True
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(tmp_path, [Path("pkg/new.py")], patch_text)
+    assert parent.read_text(encoding="utf-8") == "not a directory\n"
+
+
 def test_apply_unified_diff_rejects_targets_that_escape_shadow_root(
     tmp_path: Path,
 ) -> None:
@@ -460,6 +536,31 @@ def test_apply_unified_diff_rejects_changed_files_mismatches(tmp_path: Path) -> 
 
     with pytest.raises(SecurityError):
         apply_unified_diff(tmp_path, [Path("pkg/app.py"), Path("pkg/extra.py")], patch_text)
+
+
+def test_apply_unified_diff_rejects_duplicate_changed_files_entries(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pkg").mkdir()
+    target = tmp_path / "pkg" / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch_text = dedent(
+        """\
+        --- a/pkg/app.py
+        +++ b/pkg/app.py
+        @@ -1 +1 @@
+        -value = 1
+        +value = 2
+        """,
+    )
+
+    with pytest.raises(PatchApplyError):
+        apply_unified_diff(
+            tmp_path,
+            [Path("pkg/app.py"), Path("pkg/app.py")],
+            patch_text,
+        )
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
 def test_apply_unified_diff_rejects_duplicate_patch_targets(tmp_path: Path) -> None:
