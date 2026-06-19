@@ -138,6 +138,39 @@ def test_validate_patch_applies_patch_in_shadow_only(tmp_path: Path, monkeypatch
     assert response.decision == "apply_patch"
     assert response.evidence.real_workspace_modified is False
     assert response.evidence.shadow_workspace_used is True
+    assert response.evidence.command_outcomes == [
+        {
+            "command": "uv",
+            "exit_code": 0,
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        },
+        {
+            "command": "ruff",
+            "exit_code": 0,
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        },
+        {
+            "command": "pyright",
+            "exit_code": 0,
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        },
+    ]
+    required_checks = {
+        check["tool"]: check for check in response.model_dump(mode="json")["evidence"][
+            "required_checks"
+        ]
+    }
+    assert required_checks["uv"]["required"] is False
+    assert required_checks["ruff"]["required"] is True
+    assert required_checks["ruff"]["completed"] is True
+    assert required_checks["pyright"]["required"] is True
+    assert required_checks["pyright"]["completed"] is True
 
 
 def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
@@ -354,6 +387,119 @@ def test_validate_patch_path_validation_error_does_not_run_tools(
     assert response.evidence.real_workspace_modified is False
     assert response.evidence.shadow_workspace_used is False
     assert response.blockers[0].kind == "security"
+
+
+def test_validate_patch_changed_file_count_limit_is_request_blocker(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path, "pkg/one.py")
+    _write_python_file(tmp_path, "pkg/two.py")
+    _fail_if_tools_run(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "load_config",
+        lambda workspace_root, overrides=None: AgentQualityConfig(max_changed_files=1),
+    )
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/one.py", "pkg/two.py"],
+        mode=ValidationMode.QUICK,
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.decision == "reject_request"
+    assert response.blockers[0].kind == "request"
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is False
+
+
+def test_validate_patch_patch_size_limit_is_request_blocker(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    _fail_if_tools_run(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "load_config",
+        lambda workspace_root, overrides=None: AgentQualityConfig(max_patch_bytes=10),
+    )
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        patch_unified_diff="x" * 11,
+        mode=ValidationMode.QUICK,
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.decision == "reject_request"
+    assert response.blockers[0].kind == "request"
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is False
+
+
+def test_validate_patch_preserves_truncated_diagnostic_context(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    class NoopUvAdapter(CleanUvAdapter):
+        pass
+
+    class DiagnosticRuffAdapter(CleanRuffAdapter):
+        def check(
+            self,
+            cwd: Path,
+            changed_files: list[Path],
+            mode: str,
+            preview_safe_fixes: bool = False,
+        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord], list[SafeFixPreview]]:
+            return [
+                diagnostic_from_message(
+                    source="ruff",
+                    code="F401",
+                    message="Unused import",
+                    severity=DiagnosticSeverity.WARNING,
+                    is_blocking=False,
+                    file="pkg/app.py",
+                ),
+                diagnostic_from_message(
+                    source="ruff",
+                    code="E501",
+                    message="Line too long",
+                    severity=DiagnosticSeverity.WARNING,
+                    is_blocking=False,
+                    file="pkg/app.py",
+                ),
+            ], [_record("ruff")], []
+
+    class NoopPyrightAdapter(CleanPyrightAdapter):
+        pass
+
+    monkeypatch.setattr(service_module, "UvAdapter", NoopUvAdapter)
+    monkeypatch.setattr(service_module, "RuffAdapter", DiagnosticRuffAdapter)
+    monkeypatch.setattr(service_module, "PyrightAdapter", NoopPyrightAdapter)
+    monkeypatch.setattr(
+        service_module,
+        "load_config",
+        lambda workspace_root, overrides=None: AgentQualityConfig(max_diagnostics=1),
+    )
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        mode=ValidationMode.QUICK,
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.evidence.diagnostic_count == 2
+    assert response.evidence.total_diagnostic_count == 2
+    assert response.evidence.returned_diagnostic_count == 1
+    assert response.evidence.diagnostics_truncated is True
 
 
 def test_validate_patch_preserves_tool_unavailable_diagnostics(

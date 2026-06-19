@@ -22,6 +22,7 @@ from agent_quality_mcp.exceptions import (
     CommandExecutionError,
     ConfigurationError,
     PatchApplyError,
+    ResourceLimitError,
     SecurityError,
     ToolUnavailableError,
     WorkspaceError,
@@ -364,10 +365,10 @@ def _validate_request_limits(
 ) -> None:
     if len(changed_files) > config.max_changed_files:
         audit.resource_limit("changed_files exceeds configured max_changed_files")
-        raise WorkspaceError("changed_files exceeds configured max_changed_files")
+        raise ResourceLimitError("changed_files exceeds configured max_changed_files")
     if patch_bytes > config.max_patch_bytes:
         audit.resource_limit("patch_unified_diff exceeds configured max_patch_bytes")
-        raise PatchApplyError("patch_unified_diff exceeds configured max_patch_bytes")
+        raise ResourceLimitError("patch_unified_diff exceeds configured max_patch_bytes")
     audit.resource_limit(f"Changed file count accepted: {len(changed_files)}")
     audit.resource_limit(f"Patch size accepted: {patch_bytes} bytes")
     for relative_path in changed_files:
@@ -380,10 +381,7 @@ def _validate_request_limits(
                 f"changed file exceeds configured max_changed_file_bytes: "
                 f"{relative_path.as_posix()}"
             )
-            raise WorkspaceError(
-                f"changed file exceeds configured max_changed_file_bytes: "
-                f"{relative_path.as_posix()}"
-            )
+            raise ResourceLimitError("changed file exceeds configured max_changed_file_bytes")
 
 
 def _final_response(
@@ -470,6 +468,7 @@ def _response_from_parts(
         safety_mode=request.safety_mode or config.default_safety_mode,
         diagnostics=diagnostics,
         compressed_groups=context_summary.compressed_groups,
+        context_summary=context_summary,
         risk_score=risk_score,
         execution=execution,
         audit=audit_summary,
@@ -486,6 +485,8 @@ def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
     if isinstance(exc, ConfigurationError):
         code = "configuration_error"
         message = "Configuration rejected"
+    elif isinstance(exc, ResourceLimitError):
+        code = "resource_limit"
     elif isinstance(exc, WorkspaceError):
         source = "workspace"
         code = "workspace_error"
@@ -526,6 +527,8 @@ def _sanitize_safe_fixes_for_response(
 def _record_error_decision(audit: AuditRecorder, exc: AgentQualityMcpError) -> None:
     if isinstance(exc, SecurityError):
         audit.permission(f"Security validation denied request: {exc}")
+    elif isinstance(exc, ResourceLimitError):
+        audit.resource_limit(f"Resource limit stopped request: {exc}")
     elif isinstance(exc, WorkspaceError):
         audit.resource_limit(f"Workspace validation stopped request: {exc}")
     elif isinstance(exc, PatchApplyError):

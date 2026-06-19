@@ -4,6 +4,7 @@ from agent_quality_mcp.diagnostics import diagnostic_from_message
 from agent_quality_mcp.models import (
     AuditSummary,
     CommandExecutionRecord,
+    ContextSummary,
     DiagnosticSeverity,
     ExecutionMetadata,
     RiskLevel,
@@ -124,6 +125,58 @@ def test_build_validate_patch_response_returns_apply_patch_for_clean_quick_run()
     assert required_checks["pyright"]["completed"] is True
     assert response.evidence.real_workspace_modified is False
     assert response.evidence.shadow_workspace_used is True
+    assert response.evidence.diagnostic_count == 0
+    assert response.evidence.total_diagnostic_count == 0
+    assert response.evidence.returned_diagnostic_count == 0
+    assert response.evidence.diagnostics_truncated is False
+
+
+def test_build_validate_patch_response_preserves_context_summary_counts() -> None:
+    diagnostic = diagnostic_from_message(
+        source="ruff",
+        code="F401",
+        message="Unused import",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        file="pkg/app.py",
+    )
+    context_summary = ContextSummary(
+        total_diagnostics=4,
+        returned_diagnostics=1,
+        truncated=True,
+        compressed_groups=[
+            {
+                "source": "ruff",
+                "code": "F401",
+                "message": "Unused import",
+                "file": "pkg/app.py",
+                "severity": "warning",
+                "count": 3,
+            }
+        ],
+    )
+
+    response = build_validate_patch_response(
+        request_id="req-1",
+        workspace_root=WORKSPACE_ROOT,
+        mode=ValidationMode.QUICK,
+        safety_mode=SafetyMode.READ_ONLY,
+        diagnostics=[diagnostic],
+        compressed_groups=[],
+        context_summary=context_summary,
+        risk_score=RiskScore(score=15, level=RiskLevel.LOW),
+        execution=ExecutionMetadata(commands=[_record("ruff"), _record("pyright")]),
+        audit=AuditSummary(),
+        safe_fixes=[],
+        real_workspace_modified=False,
+        shadow_workspace_used=True,
+    )
+
+    assert response.evidence.diagnostic_count == 4
+    assert response.evidence.total_diagnostic_count == 4
+    assert response.evidence.returned_diagnostic_count == 1
+    assert response.evidence.diagnostics_truncated is True
+    assert response.evidence.compressed_groups == context_summary.compressed_groups
 
 
 def test_build_validate_patch_response_rejects_blocking_security_diagnostic() -> None:

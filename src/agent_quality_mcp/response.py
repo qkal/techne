@@ -27,6 +27,7 @@ from agent_quality_mcp.grouping import group_diagnostics_for_decision
 from agent_quality_mcp.models import (
     AgentQualityBaseModel,
     AuditSummary,
+    ContextSummary,
     Diagnostic,
     DiagnosticSeverity,
     ExecutionMetadata,
@@ -40,6 +41,9 @@ from agent_quality_mcp.models import (
 
 class ResponseEvidence(AgentQualityBaseModel):
     diagnostic_count: int = 0
+    total_diagnostic_count: int = 0
+    returned_diagnostic_count: int = 0
+    diagnostics_truncated: bool = False
     grouped_diagnostic_count: int = 0
     compressed_groups: list[dict[str, Any]] = Field(default_factory=list)
     command_outcomes: list[dict[str, Any]] = Field(default_factory=list)
@@ -138,6 +142,7 @@ def build_validate_patch_response(
     safety_mode: SafetyMode | str | None,
     diagnostics: list[Diagnostic],
     compressed_groups: list[dict[str, Any]],
+    context_summary: ContextSummary | None = None,
     risk_score: RiskScore,
     execution: ExecutionMetadata,
     audit: AuditSummary,
@@ -147,9 +152,10 @@ def build_validate_patch_response(
 ) -> ValidatePatchResponse:
     normalized_mode = _validation_mode_or_default(mode)
     normalized_safety_mode = _safety_mode_or_default(safety_mode)
+    evidence_context = _evidence_context(diagnostics, compressed_groups, context_summary)
     blockers = group_diagnostics_for_decision(
         diagnostics,
-        compressed_groups=compressed_groups,
+        compressed_groups=evidence_context.compressed_groups,
     )
     required_checks = build_required_checks(normalized_mode, execution, diagnostics)
     decision_result = decide_validation(
@@ -171,7 +177,10 @@ def build_validate_patch_response(
         mode=normalized_mode,
         safety_mode=normalized_safety_mode,
         diagnostics=diagnostics,
-        compressed_groups=compressed_groups,
+        compressed_groups=evidence_context.compressed_groups,
+        total_diagnostic_count=evidence_context.total_diagnostic_count,
+        returned_diagnostic_count=evidence_context.returned_diagnostic_count,
+        diagnostics_truncated=evidence_context.diagnostics_truncated,
         risk_score=risk_score,
         execution=execution,
         audit=audit,
@@ -190,6 +199,9 @@ def _assemble_response(
     safety_mode: SafetyMode,
     diagnostics: list[Diagnostic],
     compressed_groups: list[dict[str, Any]],
+    total_diagnostic_count: int | None = None,
+    returned_diagnostic_count: int | None = None,
+    diagnostics_truncated: bool = False,
     risk_score: RiskScore,
     execution: ExecutionMetadata,
     audit: AuditSummary,
@@ -203,6 +215,10 @@ def _assemble_response(
         mode=mode,
         fix_plan=fix_plan,
     )
+    total_count = len(diagnostics) if total_diagnostic_count is None else total_diagnostic_count
+    returned_count = (
+        len(diagnostics) if returned_diagnostic_count is None else returned_diagnostic_count
+    )
     return ValidatePatchResponse(
         request_id=request_id,
         workspace_root=workspace_root,
@@ -215,7 +231,10 @@ def _assemble_response(
         next_actions=next_actions,
         fix_plan=fix_plan,
         evidence=ResponseEvidence(
-            diagnostic_count=len(diagnostics),
+            diagnostic_count=total_count,
+            total_diagnostic_count=total_count,
+            returned_diagnostic_count=returned_count,
+            diagnostics_truncated=diagnostics_truncated,
             grouped_diagnostic_count=len(decision_result.blockers),
             compressed_groups=compressed_groups,
             command_outcomes=[
@@ -241,6 +260,33 @@ def _assemble_response(
         ),
         execution=execution,
         audit=audit,
+    )
+
+
+class _EvidenceContext(AgentQualityBaseModel):
+    compressed_groups: list[dict[str, Any]] = Field(default_factory=list)
+    total_diagnostic_count: int = 0
+    returned_diagnostic_count: int = 0
+    diagnostics_truncated: bool = False
+
+
+def _evidence_context(
+    diagnostics: list[Diagnostic],
+    compressed_groups: list[dict[str, Any]],
+    context_summary: ContextSummary | None,
+) -> _EvidenceContext:
+    if context_summary is None:
+        return _EvidenceContext(
+            compressed_groups=compressed_groups,
+            total_diagnostic_count=len(diagnostics),
+            returned_diagnostic_count=len(diagnostics),
+            diagnostics_truncated=False,
+        )
+    return _EvidenceContext(
+        compressed_groups=context_summary.compressed_groups,
+        total_diagnostic_count=context_summary.total_diagnostics,
+        returned_diagnostic_count=context_summary.returned_diagnostics,
+        diagnostics_truncated=context_summary.truncated,
     )
 
 

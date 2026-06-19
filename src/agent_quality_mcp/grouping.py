@@ -85,7 +85,7 @@ def _kind_for_diagnostic(diagnostic: Diagnostic) -> BlockerKind:
         return BlockerKind.PATCH
     if diagnostic.source == "system" and diagnostic.code in {"tool_missing", "tool_unavailable"}:
         return BlockerKind.TOOLING
-    if diagnostic.source == "system" and diagnostic.code == "invalid_request":
+    if diagnostic.source == "system" and diagnostic.code in {"invalid_request", "resource_limit"}:
         return BlockerKind.REQUEST
     if diagnostic.source == "pyright":
         return BlockerKind.TYPE

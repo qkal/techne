@@ -184,6 +184,20 @@ def test_group_diagnostics_maps_real_service_codes_to_request_and_timeout() -> N
     ]
 
 
+def test_group_diagnostics_maps_resource_limit_to_request() -> None:
+    diagnostic = diagnostic_from_message(
+        source="system",
+        code="resource_limit",
+        message="changed_files exceeds configured max_changed_files",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+    )
+
+    blockers = group_diagnostics_for_decision([diagnostic], compressed_groups=[])
+
+    assert [blocker.kind for blocker in blockers] == [BlockerKind.REQUEST]
+
+
 def test_group_diagnostics_maps_planned_contract_sources() -> None:
     diagnostics = [
         diagnostic_from_message(
