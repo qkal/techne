@@ -178,7 +178,13 @@ def _compressed_group_key(group: dict[str, Any]) -> CompressedGroupKey | None:
     raw_range = group.get("range")
     range_key = _compressed_group_range_key(raw_range)
     is_fixable = group.get("is_fixable", False)
-    if not all(isinstance(value, str) for value in (source, code, message, severity)):
+    if not isinstance(source, str):
+        return None
+    if not isinstance(code, str):
+        return None
+    if not isinstance(message, str):
+        return None
+    if not isinstance(severity, str):
         return None
     if file is not None and not isinstance(file, str):
         return None
@@ -206,15 +212,19 @@ def _compressed_group_range_key(raw_range: Any) -> RangeKey:
         return None
     if not isinstance(raw_range, dict):
         return None
-    values = (
-        raw_range.get("start_line"),
-        raw_range.get("start_column"),
-        raw_range.get("end_line"),
-        raw_range.get("end_column"),
-    )
-    if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+    start_line = raw_range.get("start_line")
+    start_column = raw_range.get("start_column")
+    end_line = raw_range.get("end_line")
+    end_column = raw_range.get("end_column")
+    if not isinstance(start_line, int) or isinstance(start_line, bool):
         return None
-    return values
+    if not isinstance(start_column, int) or isinstance(start_column, bool):
+        return None
+    if not isinstance(end_line, int) or isinstance(end_line, bool):
+        return None
+    if not isinstance(end_column, int) or isinstance(end_column, bool):
+        return None
+    return (start_line, start_column, end_line, end_column)
 
 
 def _diagnostic_range_key(diagnostic: Diagnostic) -> RangeKey:
