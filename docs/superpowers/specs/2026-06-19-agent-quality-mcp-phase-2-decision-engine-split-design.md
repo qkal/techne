@@ -15,6 +15,10 @@ the hardest behavior is tested before the public MCP response changes. The goal
 is to de-risk the breaking API change without adding a temporary Phase 1
 compatibility shim.
 
+This design supersedes the existing Phase 2 implementation plan until that plan
+is rewritten. The current plan starts with response models, so it must not be
+used for implementation after this split is approved.
+
 ## Scope
 
 This split includes:
@@ -112,6 +116,17 @@ tests. Tests should cover:
 Existing service and integration tests remain Phase 1-compatible in this
 milestone. The new modules may be exercised through pure unit tests or narrow
 service-adjacent tests that do not switch the returned MCP payload.
+
+Before decision code is written, the implementation plan must define the
+required-check matrix for `quick`, `standard`, and `strict` modes. That matrix
+must identify required checks, optional checks, skipped-check confidence effects,
+and whether missing required checks should route to `fix_tooling` or
+`request_human_review`. This prevents the decision engine from hard-coding vague
+mode semantics.
+
+If Milestone 1 adds any service-adjacent integration, it must be dormant or
+test-only until Milestone 3. `validate_patch` output must remain Phase
+1-compatible throughout Milestone 1.
 
 ## Milestone 2: Response Assembly
 
@@ -243,6 +258,9 @@ The existing Phase 2 design remains the source for the final response contract.
 This split design controls implementation sequencing.
 
 The implementation plan should be rewritten around the three milestones above.
+The existing plan at
+`docs/superpowers/plans/2026-06-19-agent-quality-mcp-phase-2-agent-decision-contract.md`
+is stale after this design and should be replaced rather than amended piecemeal.
 The README should not be updated in Milestone 1 unless a short developer-facing
 note is needed. Public README examples should update in Milestone 3, when
 `validate_patch` actually switches to the new response.
@@ -251,6 +269,10 @@ note is needed. Public README examples should update in Milestone 3, when
 
 - The Phase 2 implementation plan is reorganized into decision-engine,
   response-assembly, and service-switch milestones.
+- The stale schema-first implementation plan is replaced before implementation
+  starts.
+- The rewritten implementation plan defines required checks for `quick`,
+  `standard`, and `strict` before any decision-engine code is written.
 - Milestone 1 can land without changing the public `validate_patch` response.
 - Decision precedence and confidence rules are tested before the public response
   switch.
