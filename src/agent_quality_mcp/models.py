@@ -276,27 +276,6 @@ class AuditSummary(AgentQualityBaseModel):
     redactions_applied: int = 0
 
 
-class ValidatePatchResponse(AgentQualityBaseModel):
-    """Structured response returned by validate_patch."""
-
-    request_id: str
-    status: ResponseStatus
-    workspace_root: str
-    mode: ValidationMode
-    safety_mode: SafetyMode
-    real_workspace_modified: bool
-    shadow_workspace_used: bool
-    blocking_errors: list[Diagnostic] = Field(default_factory=list)
-    warnings: list[Diagnostic] = Field(default_factory=list)
-    info: list[Diagnostic] = Field(default_factory=list)
-    safe_fixes: list[SafeFixPreview] = Field(default_factory=list)
-    suggested_actions: list[SuggestedAction] = Field(default_factory=list)
-    risk_score: RiskScore
-    execution: ExecutionMetadata
-    audit: AuditSummary
-    context_summary: ContextSummary
-
-
 class InspectWorkspaceResponse(AgentQualityBaseModel):
     """Safe metadata returned by inspect_workspace."""
 
@@ -309,60 +288,6 @@ class InspectWorkspaceResponse(AgentQualityBaseModel):
     config_files: list[str]
     excluded_directories: list[str]
     security_decisions: list[str]
-
-
-def _validation_mode_or_default(mode: ValidationMode | str | None) -> ValidationMode:
-    """Return a validation mode, defaulting fail-closed for invalid input."""
-    if mode is None:
-        return ValidationMode.STANDARD
-    try:
-        return ValidationMode(mode)
-    except ValueError:
-        return ValidationMode.STANDARD
-
-
-def _safety_mode_or_default(safety_mode: SafetyMode | str | None) -> SafetyMode:
-    """Return a safety mode, defaulting fail-closed for invalid input."""
-    if safety_mode is None:
-        return SafetyMode.READ_ONLY
-    try:
-        return SafetyMode(safety_mode)
-    except ValueError:
-        return SafetyMode.READ_ONLY
-
-
-def build_error_response(
-    *,
-    request_id: str,
-    workspace_root: str,
-    mode: ValidationMode | str | None,
-    safety_mode: SafetyMode | str | None,
-    code: str,
-    message: str,
-) -> ValidatePatchResponse:
-    """Build a fail-closed error response for validation failures."""
-    diagnostic = Diagnostic(
-        id=f"system-{code}",
-        source="system",
-        severity=DiagnosticSeverity.BLOCKER,
-        code=code,
-        message=message,
-        is_blocking=True,
-    )
-    return ValidatePatchResponse(
-        request_id=request_id,
-        status=ResponseStatus.ERROR,
-        workspace_root=workspace_root,
-        mode=_validation_mode_or_default(mode),
-        safety_mode=_safety_mode_or_default(safety_mode),
-        real_workspace_modified=False,
-        shadow_workspace_used=False,
-        blocking_errors=[diagnostic],
-        risk_score=RiskScore(score=100, level=RiskLevel.CRITICAL, factors=[message]),
-        execution=ExecutionMetadata(),
-        audit=AuditSummary(),
-        context_summary=ContextSummary(total_diagnostics=1, returned_diagnostics=1),
-    )
 
 
 def path_to_display(path: Path) -> str:

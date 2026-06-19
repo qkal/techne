@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_quality_mcp import tools as tools_module
-from agent_quality_mcp.models import (
-    ValidatePatchRequest,
+from agent_quality_mcp.models import ValidatePatchRequest
+from agent_quality_mcp.response import (
     ValidatePatchResponse,
     build_error_response,
 )
@@ -85,7 +85,7 @@ def test_validate_patch_tool_builds_request_and_returns_json_dict(
     )
 
     assert isinstance(result, dict)
-    assert result["real_workspace_modified"] is False
+    assert result["evidence"]["real_workspace_modified"] is False
     assert result["mode"] == "quick"
     assert result["safety_mode"] == "read_only"
     request = captured["request"]
@@ -141,9 +141,66 @@ def test_validate_patch_tool_returns_structured_error_for_invalid_request(
     )
 
     assert result["request_id"] == "req-invalid"
-    assert result["status"] == "error"
-    assert result["blocking_errors"][0]["code"] == "invalid_request"
-    assert result["real_workspace_modified"] is False
+    assert result["decision"] == "reject_request"
+    assert result["blockers"][0]["kind"] == "request"
+    assert result["evidence"]["real_workspace_modified"] is False
+    assert "status" not in result
+    assert "blocking_errors" not in result
+
+
+def test_validate_patch_tool_sanitizes_non_string_request_id_on_invalid_request(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    def fail_if_called(request: ValidatePatchRequest) -> ValidatePatchResponse:
+        raise AssertionError("invalid requests should not reach the service")
+
+    monkeypatch.setattr(tools_module, "validate_patch_service", fail_if_called)
+
+    result = validate_patch_tool(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        request_id=cast(Any, 123),
+        mode=cast(Any, {"bad": "mode"}),
+        safety_mode=cast(Any, ["bad"]),
+    )
+
+    assert isinstance(result["request_id"], str)
+    assert result["request_id"] != "123"
+    assert result["workspace_root"] == str(tmp_path)
+    assert result["mode"] == "standard"
+    assert result["safety_mode"] == "read_only"
+    assert result["decision"] == "reject_request"
+    assert result["blockers"][0]["kind"] == "request"
+    assert result["evidence"]["real_workspace_modified"] is False
+    assert "status" not in result
+    assert "blocking_errors" not in result
+
+
+def test_validate_patch_tool_sanitizes_non_string_workspace_root_on_invalid_request(
+    monkeypatch: Any,
+) -> None:
+    def fail_if_called(request: ValidatePatchRequest) -> ValidatePatchResponse:
+        raise AssertionError("invalid requests should not reach the service")
+
+    monkeypatch.setattr(tools_module, "validate_patch_service", fail_if_called)
+
+    result = validate_patch_tool(
+        workspace_root=cast(Any, 123),
+        changed_files=["pkg/app.py"],
+        request_id="req-invalid-root",
+    )
+
+    assert result["request_id"] == "req-invalid-root"
+    assert isinstance(result["workspace_root"], str)
+    assert result["workspace_root"] == "<invalid>"
+    assert result["decision"] == "reject_request"
+    assert result["blockers"][0]["kind"] == "request"
+    assert result["evidence"]["real_workspace_modified"] is False
+    assert "status" not in result
+    assert "blocking_errors" not in result
 
 
 def test_inspect_workspace_tool_returns_resolved_workspace_json(tmp_path: Path) -> None:

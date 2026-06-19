@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports]
 
-from agent_quality_mcp.exceptions import SecurityError, WorkspaceError
+from agent_quality_mcp.exceptions import ResourceLimitError, SecurityError, WorkspaceError
 from agent_quality_mcp.models import AgentQualityConfig
 from agent_quality_mcp.shadow import create_shadow_workspace
 from agent_quality_mcp.workspace import inspect_workspace_files
@@ -72,6 +72,10 @@ def test_shadow_workspace_rejects_file_exceeding_max_file_bytes(tmp_path: Path) 
         with create_shadow_workspace(tmp_path, config):
             pass
 
+    with pytest.raises(ResourceLimitError):
+        with create_shadow_workspace(tmp_path, config):
+            pass
+
 
 def test_shadow_workspace_rejects_total_copy_exceeding_max_workspace_bytes(
     tmp_path: Path,
@@ -81,6 +85,10 @@ def test_shadow_workspace_rejects_total_copy_exceeding_max_workspace_bytes(
     config = AgentQualityConfig(max_workspace_copy_bytes=5)
 
     with pytest.raises(WorkspaceError):
+        with create_shadow_workspace(tmp_path, config):
+            pass
+
+    with pytest.raises(ResourceLimitError):
         with create_shadow_workspace(tmp_path, config):
             pass
 
