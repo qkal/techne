@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from agent_quality_mcp.audit import AuditRecorder, redact_text
 from agent_quality_mcp.cli.pyright import PyrightAdapter
@@ -41,19 +42,18 @@ from agent_quality_mcp.models import (
     SafeFixPreview,
     SafetyMode,
     ValidatePatchRequest,
-    ValidatePatchResponse,
 )
 from agent_quality_mcp.patching import apply_unified_diff
 from agent_quality_mcp.paths import resolve_workspace_root, validate_changed_files
+from agent_quality_mcp.response import ValidatePatchResponse, build_validate_patch_response
 from agent_quality_mcp.risk import compute_risk_score
 from agent_quality_mcp.shadow import create_shadow_workspace
-from agent_quality_mcp.suggestions import build_suggestions
 from agent_quality_mcp.workspace import inspect_workspace_files
 
 SUPPORTED_TOOLS = ("uv", "ruff", "pyright")
 
 
-def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchResponse:
+def validate_patch_service(request: ValidatePatchRequest) -> Any:
     """Validate a patch request without mutating the real workspace."""
 
     started_at = time.monotonic()
@@ -169,7 +169,6 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
 
         _raise_if_timed_out(started_at, config)
         compressed, context_summary = compress_diagnostics(diagnostics, config)
-        status = _validation_status(compressed)
         risk_score = compute_risk_score(
             compressed,
             patch_bytes=patch_bytes,
@@ -180,7 +179,6 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
             request=request,
             config=config,
             workspace_root=resolved_root_text,
-            status=status,
             diagnostics=compressed,
             safe_fixes=safe_fixes,
             risk_score=risk_score,
@@ -424,7 +422,6 @@ def _final_response(
         request=request,
         config=config,
         workspace_root=workspace_root,
-        status=status,
         diagnostics=compressed,
         safe_fixes=safe_fixes,
         risk_score=risk_score,
@@ -444,7 +441,6 @@ def _response_from_parts(
     request: ValidatePatchRequest,
     config: AgentQualityConfig,
     workspace_root: str,
-    status: ResponseStatus,
     diagnostics: list[Diagnostic],
     safe_fixes: list[SafeFixPreview],
     risk_score: RiskScore,
@@ -457,60 +453,31 @@ def _response_from_parts(
     commands: list[CommandExecutionRecord],
     timed_out: bool,
 ) -> ValidatePatchResponse:
-    blocking_errors, warnings, info = _categorize_diagnostics(diagnostics)
-    return ValidatePatchResponse(
+    execution = ExecutionMetadata(
+        duration_ms=_duration_ms(started_at),
+        shadow_workspace_path=shadow_workspace_path,
+        shadow_workspace_preserved=shadow_workspace_preserved,
+        commands=commands,
+        tool_availability=_tool_availability(diagnostics),
+        timed_out=timed_out or any(record.timed_out for record in commands),
+        output_truncated=any(
+            record.stdout_truncated or record.stderr_truncated for record in commands
+        ),
+    )
+    return build_validate_patch_response(
         request_id=request.request_id,
-        status=status,
         workspace_root=workspace_root,
         mode=request.mode or config.default_mode,
         safety_mode=request.safety_mode or config.default_safety_mode,
+        diagnostics=diagnostics,
+        compressed_groups=context_summary.compressed_groups,
+        risk_score=risk_score,
+        execution=execution,
+        audit=audit_summary,
+        safe_fixes=safe_fixes,
         real_workspace_modified=False,
         shadow_workspace_used=shadow_workspace_used,
-        blocking_errors=blocking_errors,
-        warnings=warnings,
-        info=info,
-        safe_fixes=safe_fixes,
-        suggested_actions=build_suggestions(diagnostics),
-        risk_score=risk_score,
-        execution=ExecutionMetadata(
-            duration_ms=_duration_ms(started_at),
-            shadow_workspace_path=shadow_workspace_path,
-            shadow_workspace_preserved=shadow_workspace_preserved,
-            commands=commands,
-            tool_availability=_tool_availability(diagnostics),
-            timed_out=timed_out or any(record.timed_out for record in commands),
-            output_truncated=any(
-                record.stdout_truncated or record.stderr_truncated for record in commands
-            ),
-        ),
-        audit=audit_summary,
-        context_summary=context_summary,
     )
-
-
-def _categorize_diagnostics(
-    diagnostics: list[Diagnostic],
-) -> tuple[list[Diagnostic], list[Diagnostic], list[Diagnostic]]:
-    blocking_errors: list[Diagnostic] = []
-    warnings: list[Diagnostic] = []
-    info: list[Diagnostic] = []
-    for diagnostic in diagnostics:
-        if diagnostic.is_blocking or diagnostic.severity == DiagnosticSeverity.BLOCKER:
-            blocking_errors.append(diagnostic)
-        elif diagnostic.severity == DiagnosticSeverity.INFO:
-            info.append(diagnostic)
-        else:
-            warnings.append(diagnostic)
-    return blocking_errors, warnings, info
-
-
-def _validation_status(diagnostics: list[Diagnostic]) -> ResponseStatus:
-    if any(
-        diagnostic.is_blocking or diagnostic.severity == DiagnosticSeverity.BLOCKER
-        for diagnostic in diagnostics
-    ):
-        return ResponseStatus.FAILED
-    return ResponseStatus.PASSED
 
 
 def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:

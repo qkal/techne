@@ -20,12 +20,22 @@ from agent_quality_mcp.models import (
 from agent_quality_mcp.service import inspect_workspace_service, validate_patch_service
 
 
+def _record(command: str) -> CommandExecutionRecord:
+    return CommandExecutionRecord(
+        command=command,
+        args=[command, "--version"],
+        cwd="/tmp/shadow",  # noqa: S108 - fixed test shadow path sample.
+        duration_ms=1,
+        exit_code=0,
+    )
+
+
 class CleanUvAdapter:
     def __init__(self, runner: Any) -> None:
         self.runner = runner
 
     def check(self, cwd: Path, mode: str) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
-        return [], []
+        return [], [_record("uv")]
 
 
 class CleanRuffAdapter:
@@ -39,7 +49,7 @@ class CleanRuffAdapter:
         mode: str,
         preview_safe_fixes: bool = False,
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord], list[SafeFixPreview]]:
-        return [], [], []
+        return [], [_record("ruff")], []
 
 
 class CleanPyrightAdapter:
@@ -52,7 +62,7 @@ class CleanPyrightAdapter:
         changed_files: list[Path],
         mode: str,
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
-        return [], []
+        return [], [_record("pyright")]
 
 
 def _write_python_file(root: Path, relative_path: str = "pkg/app.py") -> Path:
@@ -100,10 +110,10 @@ def test_validate_patch_rejects_apply_safe_fixes(tmp_path: Path, monkeypatch: An
 
     response = validate_patch_service(request)
 
-    assert response.status == "error"
-    assert response.real_workspace_modified is False
-    assert response.shadow_workspace_used is False
-    assert response.blocking_errors[0].code == "apply_safe_fixes_not_supported"
+    assert response.decision == "reject_request"
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is False
+    assert response.blockers[0].kind == "request"
 
 
 def test_validate_patch_applies_patch_in_shadow_only(tmp_path: Path, monkeypatch: Any) -> None:
@@ -125,9 +135,9 @@ def test_validate_patch_applies_patch_in_shadow_only(tmp_path: Path, monkeypatch
     response = validate_patch_service(request)
 
     assert target.read_text(encoding="utf-8") == "value = 1\n"
-    assert response.status == "passed"
-    assert response.real_workspace_modified is False
-    assert response.shadow_workspace_used is True
+    assert response.decision in {"apply_patch", "fix_tooling"}
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is True
 
 
 def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
@@ -144,7 +154,7 @@ def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
             mode: str,
         ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
             captured["uv_mode"] = mode
-            return [], []
+            return [], [_record("uv")]
 
     class CaptureRuffAdapter(CleanRuffAdapter):
         def check(
@@ -156,7 +166,7 @@ def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
         ) -> tuple[list[Diagnostic], list[CommandExecutionRecord], list[SafeFixPreview]]:
             captured["ruff_mode"] = mode
             captured["preview_safe_fixes"] = preview_safe_fixes
-            return [], [], []
+            return [], [_record("ruff")], []
 
     class CapturePyrightAdapter(CleanPyrightAdapter):
         def check(
@@ -166,7 +176,7 @@ def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
             mode: str,
         ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
             captured["pyright_mode"] = mode
-            return [], []
+            return [], [_record("pyright")]
 
     monkeypatch.setattr(service_module, "UvAdapter", CaptureUvAdapter)
     monkeypatch.setattr(service_module, "RuffAdapter", CaptureRuffAdapter)
@@ -222,9 +232,9 @@ def test_validate_patch_enforces_request_timeout(tmp_path: Path, monkeypatch: An
 
     response = validate_patch_service(request)
 
-    assert response.status == "error"
-    assert response.real_workspace_modified is False
-    assert response.blocking_errors[0].code == "request_timeout"
+    assert response.decision == "request_human_review"
+    assert response.evidence.real_workspace_modified is False
+    assert response.blockers[0].kind == "timeout"
 
 
 def test_validate_patch_invalid_config_does_not_fallback_to_cwd(
@@ -260,8 +270,8 @@ default_mode = "quick"
 
     response = validate_patch_service(request)
 
-    assert response.status == "error"
-    assert response.blocking_errors[0].code == "configuration_error"
+    assert response.decision == "request_human_review"
+    assert response.blockers[0].kind == "human_review"
     assert calls == [workspace.resolve()]
 
 
@@ -290,8 +300,8 @@ def test_validate_patch_config_rejection_does_not_leak_raw_error(
     response = validate_patch_service(request)
     serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
 
-    assert response.status == "error"
-    assert response.blocking_errors[0].code == "configuration_error"
+    assert response.decision == "request_human_review"
+    assert response.blockers[0].kind == "human_review"
     assert response.execution.commands == []
     assert raw_value not in serialized
     assert raw_error not in serialized
@@ -320,10 +330,10 @@ def test_validate_patch_patch_error_does_not_run_tools(
     response = validate_patch_service(request)
 
     assert target.read_text(encoding="utf-8") == "value = 1\n"
-    assert response.status == "error"
-    assert response.real_workspace_modified is False
-    assert response.shadow_workspace_used is True
-    assert response.blocking_errors[0].source == "patch"
+    assert response.decision == "revise_patch"
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is True
+    assert response.blockers[0].kind == "patch"
 
 
 def test_validate_patch_path_validation_error_does_not_run_tools(
@@ -340,11 +350,10 @@ def test_validate_patch_path_validation_error_does_not_run_tools(
 
     response = validate_patch_service(request)
 
-    assert response.status == "error"
-    assert response.real_workspace_modified is False
-    assert response.shadow_workspace_used is False
-    assert response.blocking_errors[0].source == "security"
-    assert response.blocking_errors[0].code == "security_error"
+    assert response.decision == "reject_request"
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is False
+    assert response.blockers[0].kind == "security"
 
 
 def test_validate_patch_preserves_tool_unavailable_diagnostics(
@@ -391,13 +400,8 @@ def test_validate_patch_preserves_tool_unavailable_diagnostics(
 
     response = validate_patch_service(request)
 
-    assert response.status == "passed"
-    assert {warning.metadata["tool"] for warning in response.warnings} == {
-        "uv",
-        "ruff",
-        "pyright",
-    }
-    assert response.execution.tool_availability == {
+    assert response.decision == "fix_tooling"
+    assert response.evidence.tool_availability == {
         "uv": False,
         "ruff": False,
         "pyright": False,

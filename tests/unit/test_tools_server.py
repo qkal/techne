@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from agent_quality_mcp import tools as tools_module
-from agent_quality_mcp.models import (
-    ValidatePatchRequest,
+from agent_quality_mcp.models import ValidatePatchRequest
+from agent_quality_mcp.response import (
     ValidatePatchResponse,
     build_error_response,
 )
@@ -85,7 +85,7 @@ def test_validate_patch_tool_builds_request_and_returns_json_dict(
     )
 
     assert isinstance(result, dict)
-    assert result["real_workspace_modified"] is False
+    assert result["evidence"]["real_workspace_modified"] is False
     assert result["mode"] == "quick"
     assert result["safety_mode"] == "read_only"
     request = captured["request"]
@@ -141,9 +141,11 @@ def test_validate_patch_tool_returns_structured_error_for_invalid_request(
     )
 
     assert result["request_id"] == "req-invalid"
-    assert result["status"] == "error"
-    assert result["blocking_errors"][0]["code"] == "invalid_request"
-    assert result["real_workspace_modified"] is False
+    assert result["decision"] == "reject_request"
+    assert result["blockers"][0]["kind"] == "request"
+    assert result["evidence"]["real_workspace_modified"] is False
+    assert "status" not in result
+    assert "blocking_errors" not in result
 
 
 def test_inspect_workspace_tool_returns_resolved_workspace_json(tmp_path: Path) -> None:

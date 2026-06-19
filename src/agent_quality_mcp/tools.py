@@ -7,11 +7,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from agent_quality_mcp.models import (
-    InspectWorkspaceRequest,
-    ValidatePatchRequest,
-    build_error_response,
-)
+from agent_quality_mcp.models import InspectWorkspaceRequest, ValidatePatchRequest
+from agent_quality_mcp.response import build_error_response
 from agent_quality_mcp.service import inspect_workspace_service, validate_patch_service
 
 
