@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from agent_quality_mcp.audit import AuditRecorder, redact_text
 from agent_quality_mcp.cli.pyright import PyrightAdapter
@@ -53,7 +52,7 @@ from agent_quality_mcp.workspace import inspect_workspace_files
 SUPPORTED_TOOLS = ("uv", "ruff", "pyright")
 
 
-def validate_patch_service(request: ValidatePatchRequest) -> Any:
+def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchResponse:
     """Validate a patch request without mutating the real workspace."""
 
     started_at = time.monotonic()

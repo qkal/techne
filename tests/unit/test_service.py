@@ -135,7 +135,7 @@ def test_validate_patch_applies_patch_in_shadow_only(tmp_path: Path, monkeypatch
     response = validate_patch_service(request)
 
     assert target.read_text(encoding="utf-8") == "value = 1\n"
-    assert response.decision in {"apply_patch", "fix_tooling"}
+    assert response.decision == "apply_patch"
     assert response.evidence.real_workspace_modified is False
     assert response.evidence.shadow_workspace_used is True
 
