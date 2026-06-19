@@ -7,8 +7,8 @@ and returns structured diagnostics for agents before they mutate production
 workspace state.
 
 Real repository files are not modified by default. `validate_patch` reports
-`real_workspace_modified: false`, uses an isolated shadow workspace, and rejects
-the currently unsupported `apply_safe_fixes` safety mode.
+`evidence.real_workspace_modified: false`, uses an isolated shadow workspace,
+and rejects the currently unsupported `apply_safe_fixes` safety mode.
 
 ## Security Model
 
