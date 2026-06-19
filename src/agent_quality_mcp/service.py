@@ -170,16 +170,16 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
         _raise_if_timed_out(started_at, config)
         compressed, context_summary = compress_diagnostics(diagnostics, config)
         risk_score = compute_risk_score(
-            compressed,
+            diagnostics,
             patch_bytes=patch_bytes,
             changed_file_count=len(changed_files),
-            missing_tools=_missing_tools(compressed),
+            missing_tools=_missing_tools(diagnostics),
         )
         return _response_from_parts(
             request=request,
             config=config,
             workspace_root=resolved_root_text,
-            diagnostics=compressed,
+            diagnostics=diagnostics,
             safe_fixes=safe_fixes,
             risk_score=risk_score,
             context_summary=context_summary,
@@ -419,7 +419,7 @@ def _final_response(
         request=request,
         config=config,
         workspace_root=workspace_root,
-        diagnostics=compressed,
+        diagnostics=diagnostics,
         safe_fixes=safe_fixes,
         risk_score=risk_score,
         context_summary=context_summary,

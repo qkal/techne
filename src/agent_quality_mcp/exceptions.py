@@ -21,7 +21,7 @@ class PatchApplyError(AgentQualityMcpError):
     """Raised when a unified diff cannot be safely applied."""
 
 
-class ResourceLimitError(AgentQualityMcpError):
+class ResourceLimitError(WorkspaceError):
     """Raised when request data exceeds configured resource limits."""
 
 

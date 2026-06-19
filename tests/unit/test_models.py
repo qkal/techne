@@ -1,5 +1,6 @@
 from pydantic import ValidationError
 
+import agent_quality_mcp.models as models_module
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     Diagnostic,
@@ -97,3 +98,8 @@ def test_diagnostic_range_is_optional_and_typed() -> None:
 
     assert diagnostic.range is not None
     assert diagnostic.range.start_line == 1
+
+
+def test_models_do_not_export_stale_validate_patch_response_contract() -> None:
+    assert not hasattr(models_module, "ValidatePatchResponse")
+    assert not hasattr(models_module, "build_error_response")

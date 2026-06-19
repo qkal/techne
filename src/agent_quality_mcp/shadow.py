@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
-from agent_quality_mcp.exceptions import SecurityError, WorkspaceError
+from agent_quality_mcp.exceptions import ResourceLimitError, SecurityError
 from agent_quality_mcp.models import (
     DEFAULT_SECRET_FILE_PATTERNS,
     DEFAULT_WORKSPACE_EXCLUSIONS,
@@ -96,12 +96,14 @@ def _copy_workspace(source_root: Path, shadow_root: Path, config: AgentQualityCo
         if source.is_file():
             size = source.stat().st_size
             if size > config.max_changed_file_bytes:
-                raise WorkspaceError(
+                raise ResourceLimitError(
                     f"file exceeds configured max_changed_file_bytes: {relative.as_posix()}"
                 )
             copied_bytes += size
             if copied_bytes > config.max_workspace_copy_bytes:
-                raise WorkspaceError("workspace copy exceeds configured max_workspace_copy_bytes")
+                raise ResourceLimitError(
+                    "workspace copy exceeds configured max_workspace_copy_bytes"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
 

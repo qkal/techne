@@ -13,6 +13,7 @@ from agent_quality_mcp.actions import (
     build_next_actions,
 )
 from agent_quality_mcp.decision import (
+    REQUIRED_TOOLS_BY_MODE,
     BlockerFixability,
     BlockerKind,
     Confidence,
@@ -153,8 +154,9 @@ def build_validate_patch_response(
     normalized_mode = _validation_mode_or_default(mode)
     normalized_safety_mode = _safety_mode_or_default(safety_mode)
     evidence_context = _evidence_context(diagnostics, compressed_groups, context_summary)
+    decision_diagnostics = _diagnostics_for_decision(diagnostics, normalized_mode)
     blockers = group_diagnostics_for_decision(
-        diagnostics,
+        decision_diagnostics,
         compressed_groups=evidence_context.compressed_groups,
     )
     required_checks = build_required_checks(normalized_mode, execution, diagnostics)
@@ -288,6 +290,30 @@ def _evidence_context(
         returned_diagnostic_count=context_summary.returned_diagnostics,
         diagnostics_truncated=context_summary.truncated,
     )
+
+
+def _diagnostics_for_decision(
+    diagnostics: list[Diagnostic],
+    mode: ValidationMode,
+) -> list[Diagnostic]:
+    required_tools = set(REQUIRED_TOOLS_BY_MODE[mode])
+    return [
+        diagnostic
+        for diagnostic in diagnostics
+        if not _is_optional_tool_unavailable(diagnostic, required_tools)
+    ]
+
+
+def _is_optional_tool_unavailable(
+    diagnostic: Diagnostic,
+    required_tools: set[str],
+) -> bool:
+    if diagnostic.source != "system":
+        return False
+    if diagnostic.code not in {"tool_missing", "tool_unavailable"}:
+        return False
+    tool = diagnostic.metadata.get("tool")
+    return isinstance(tool, str) and tool not in required_tools
 
 
 def _validation_mode_or_default(mode: ValidationMode | str | None) -> ValidationMode:
