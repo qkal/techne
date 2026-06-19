@@ -36,6 +36,10 @@ Phase 2 may improve validation-tool behavior only where it supports the agent
 decision contract, such as clearer skipped-check metadata or better tool outcome
 classification.
 
+The `inspect_workspace` tool remains source-compatible in Phase 2. It may add
+metadata that helps explain `validate_patch` decisions, but it should not receive
+a breaking redesign in this phase.
+
 Phase 2 defers:
 
 - Broad Python project-shape detection beyond what is needed for clearer
@@ -51,6 +55,10 @@ Phase 2 defers:
 `validate_patch` returns a response shaped around these top-level concepts:
 
 - `request_id`: caller-provided or generated request identifier.
+- `workspace_root`: normalized workspace root when resolution succeeds, otherwise
+  the redacted caller-provided root.
+- `mode`: effective validation mode after config defaults are applied.
+- `safety_mode`: effective safety mode after config defaults are applied.
 - `decision`: machine-actionable outcome.
 - `confidence`: score and rationale for the decision reliability.
 - `summary`: compact status summary for agent logs.
@@ -66,6 +74,12 @@ Phase 2 defers:
 The response should avoid duplicating the same information in multiple places.
 The top level tells the agent what to do. `blockers`, `next_actions`, `fix_plan`,
 and `evidence` explain why.
+
+Phase 2 removes the Phase 1 top-level `status`, `blocking_errors`, `warnings`,
+`info`, `suggested_actions`, `safe_fixes`, and `context_summary` fields from
+`validate_patch`. Their information moves into `decision`, `blockers`,
+`next_actions`, `fix_plan`, and `evidence`. Request models remain compatible
+unless an input was already rejected by Phase 1 validation.
 
 ### Decision Values
 
@@ -83,6 +97,23 @@ The decision layer must distinguish "the patch is bad" from "the validator
 could not complete." Agents need that distinction to choose whether to edit code,
 fix tools, retry, or escalate.
 
+Decision precedence is deterministic:
+
+1. Unsupported or unsafe requests return `reject_request`.
+2. Security and path-validation failures return `reject_request`.
+3. Patch parsing or patch application failures return `revise_patch`.
+4. Validation timeouts or unexpected internal failures return
+   `request_human_review`.
+5. Required-tool or project-metadata failures return `fix_tooling` when the patch
+   cannot be judged reliably.
+6. Ruff, Pyright, uv, or dependency findings that are attributable to the patch
+   return `revise_patch`.
+7. Clean validation returns `apply_patch`.
+
+When more than one condition is present, the highest-precedence condition wins.
+Lower-precedence conditions still appear in blockers or evidence when they were
+observed before validation stopped.
+
 ### Confidence
 
 `confidence` contains:
@@ -95,6 +126,16 @@ fix tools, retry, or escalate.
 Confidence increases when required checks ran and produced consistent results.
 Confidence decreases when tools are missing, checks are skipped, diagnostics are
 truncated, commands time out, or risk factors require human interpretation.
+
+Confidence level thresholds are:
+
+- `low`: 0 through 39
+- `medium`: 40 through 74
+- `high`: 75 through 100
+
+`apply_patch` should normally require high confidence in `standard` and `strict`
+mode. In `quick` mode, `apply_patch` may be medium confidence when skipped checks
+are expected for that mode and all completed checks are clean.
 
 ### Blockers
 
@@ -147,11 +188,15 @@ It contains:
 - `strategy`
 - `steps`
 - `target_files`
+- `safe_fix_previews`: optional previews produced by tools such as Ruff when
+  `preview_safe_fixes` is requested
 - `related_blocker_ids`
 - `rerun_hint`
 
 The fix plan is guidance, not an automatic patch. It must not fabricate source
 contents that were not observed through diagnostics or request metadata.
+Safe-fix previews must remain redacted and truncated, and they never imply that
+the real workspace may be modified automatically.
 
 ### Evidence
 
@@ -161,10 +206,12 @@ contents that were not observed through diagnostics or request metadata.
 - command outcomes
 - tool availability
 - skipped checks and reasons
+- required checks and whether each required check completed
 - risk score and factors
 - truncation flags
 - shadow-workspace status
 - real-workspace mutation status
+- diagnostic truncation and grouping metadata
 
 Detailed raw stdout, stderr, patch content, and file contents remain redacted or
 truncated according to Phase 1 security rules.
@@ -184,6 +231,8 @@ Primary additions:
   request, diagnostic, command, audit, and risk models from `models.py`.
 - Targeted updates to `service.py` so orchestration delegates decision assembly
   instead of constructing the full response inline.
+- A replacement for the current `build_error_response` helper that emits the
+  Phase 2 response contract for MCP-tool-layer validation errors.
 
 The key boundary is that uv, Ruff, Pyright, and patch adapters do not decide
 what the agent should do. They report normalized facts. The decision layer owns
@@ -212,6 +261,8 @@ The Phase 2 `validate_patch` flow is:
 Phase 2 routes failures through the decision contract:
 
 - Invalid request or unsafe input returns `decision: reject_request`.
+- `apply_safe_fixes` returns `decision: reject_request` because real-workspace
+  mutation remains unsupported.
 - Patch application failure returns `decision: revise_patch`, with patch-specific
   blockers for malformed hunks, path mismatches, or unsupported diff features.
 - Ruff or Pyright failures return `decision: revise_patch` unless every finding
@@ -221,6 +272,10 @@ Phase 2 routes failures through the decision contract:
   be judged reliably.
 - Timeout or incomplete validation returns `decision: request_human_review`
   unless the incomplete result is clearly safe and localizable.
+- Pydantic request-validation failures in the MCP tool wrapper return
+  `decision: reject_request` without calling the service layer.
+- Unexpected internal exceptions return `decision: request_human_review` with
+  redacted evidence and no permission to apply the patch.
 - Security-sensitive failures always block application and expose only redacted
   evidence.
 
@@ -243,6 +298,11 @@ what each mode actually proved.
 Mode behavior must be represented in `evidence` and `confidence.factors` so
 agents can decide whether a stricter rerun is worthwhile.
 
+The implementation plan must define the required checks for each mode before
+coding the decision layer. Missing optional checks reduce confidence. Missing
+required checks produce `fix_tooling` or `request_human_review`, depending on
+whether the cause is actionable tooling setup or incomplete validation.
+
 ## Testing
 
 Unit tests should cover:
@@ -260,10 +320,14 @@ Unit tests should cover:
 - next actions are ordered and use command argument lists
 - unsafe or human-required actions are explicitly marked
 - fix plans are present only when the patch is agent-fixable
+- `preview_safe_fixes` places redacted tool fix previews under `fix_plan`
+- MCP tool-wrapper validation errors return the new response contract
+- `inspect_workspace` remains source-compatible
 
 Service and integration tests should update the demo fixture expectations to
 assert the new top-level response contract, including decision, blockers, next
-actions, evidence, and real-workspace mutation status.
+actions, evidence, safe-fix previews when requested, and real-workspace mutation
+status.
 
 ## Documentation
 
@@ -275,6 +339,7 @@ Update the README with:
 - example revise-patch response
 - example fix-tooling response
 - guidance that Phase 2 is a breaking response cleanup
+- mapping from removed Phase 1 fields to Phase 2 fields
 - the continued guarantee that real repository files are not modified by default
 
 ## Acceptance Criteria
@@ -286,6 +351,10 @@ Update the README with:
 - `next_actions` are ranked, typed, and safe for autonomous agents to inspect.
 - `fix_plan` appears for localizable patch revision cases.
 - Missing tools and incomplete validation are distinguishable from bad patches.
+- `preview_safe_fixes` remains available through the new fix-plan structure.
+- Tool-layer invalid requests return the same response contract as service-layer
+  failures.
+- `inspect_workspace` remains source-compatible with Phase 1.
 - Security-sensitive failures remain fail-closed and redacted.
 - Existing shadow-workspace safety guarantees remain intact.
 - Unit tests cover decision, grouping, action, confidence, and service contract
