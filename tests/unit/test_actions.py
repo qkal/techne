@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent_quality_mcp.actions import (
+    FixPlan,
     NextActionKind,
     build_fix_plan,
     build_next_actions,
@@ -74,6 +75,7 @@ def test_build_next_actions_for_revise_patch_edits_then_reruns_standard() -> Non
         NextActionKind.EDIT,
         NextActionKind.RERUN,
     ]
+    assert actions[0].safe_to_run is False
     assert actions[1].command == ["validate_patch", "--mode", "standard"]
     assert actions[1].safe_to_run is True
     assert actions[1].requires_human is False
@@ -172,3 +174,17 @@ def test_build_fix_plan_returns_none_for_non_revise_patch_decisions() -> None:
     fix_plan = build_fix_plan(result, safe_fixes=[safe_fix], mode=ValidationMode.QUICK)
 
     assert fix_plan is None
+
+
+def test_fix_plan_list_fields_default_to_empty_lists() -> None:
+    fix_plan = FixPlan(strategy="Edit patch.", rerun_hint="Rerun validation.")
+    second_fix_plan = FixPlan(strategy="Edit another patch.", rerun_hint="Rerun validation.")
+
+    assert fix_plan.steps == []
+    assert fix_plan.target_files == []
+    assert fix_plan.safe_fix_previews == []
+    assert fix_plan.related_blocker_ids == []
+
+    fix_plan.steps.append("Edit the patch.")
+
+    assert second_fix_plan.steps == []

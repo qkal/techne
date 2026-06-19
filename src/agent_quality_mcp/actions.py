@@ -42,10 +42,10 @@ class NextAction(AgentQualityBaseModel):
 
 class FixPlan(AgentQualityBaseModel):
     strategy: str
-    steps: list[str]
-    target_files: list[str]
-    safe_fix_previews: list[SafeFixPreview]
-    related_blocker_ids: list[str]
+    steps: list[str] = Field(default_factory=list)
+    target_files: list[str] = Field(default_factory=list)
+    safe_fix_previews: list[SafeFixPreview] = Field(default_factory=list)
+    related_blocker_ids: list[str] = Field(default_factory=list)
     rerun_hint: str
 
 
