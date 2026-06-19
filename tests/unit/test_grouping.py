@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent_quality_mcp.decision import BlockerFixability, BlockerKind
-from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.diagnostics import diagnostic_from_message, normalize_ruff
 from agent_quality_mcp.grouping import group_diagnostics_for_decision
 from agent_quality_mcp.models import DiagnosticSeverity
 
@@ -70,6 +70,65 @@ def test_group_diagnostics_uses_matching_compressed_group_count() -> None:
     assert blockers[0].kind == BlockerKind.QUALITY
     assert blockers[0].count == 5
     assert blockers[0].related_diagnostic_ids == [diagnostic.id]
+
+
+def test_group_diagnostics_keeps_compressed_group_ranges_distinct() -> None:
+    diagnostics = normalize_ruff(
+        [
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/app.py",
+                "location": {"row": 1, "column": 1},
+                "end_location": {"row": 1, "column": 8},
+            },
+            {
+                "code": "F401",
+                "message": "Unused import",
+                "filename": "pkg/app.py",
+                "location": {"row": 3, "column": 1},
+                "end_location": {"row": 3, "column": 8},
+            },
+        ]
+    )
+
+    blockers = group_diagnostics_for_decision(
+        diagnostics,
+        compressed_groups=[
+            {
+                "source": "ruff",
+                "code": "F401",
+                "message": "Unused import",
+                "file": "pkg/app.py",
+                "severity": "warning",
+                "count": 3,
+                "range": {
+                    "start_line": 1,
+                    "start_column": 1,
+                    "end_line": 1,
+                    "end_column": 8,
+                },
+            },
+            {
+                "source": "ruff",
+                "code": "F401",
+                "message": "Unused import",
+                "file": "pkg/app.py",
+                "severity": "warning",
+                "count": 2,
+                "range": {
+                    "start_line": 3,
+                    "start_column": 1,
+                    "end_line": 3,
+                    "end_column": 8,
+                },
+            },
+        ],
+    )
+
+    assert len(blockers) == 1
+    assert blockers[0].kind == BlockerKind.QUALITY
+    assert blockers[0].count == 5
 
 
 def test_group_diagnostics_maps_known_sources_to_blocker_kinds() -> None:

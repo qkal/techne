@@ -8,7 +8,8 @@ from typing import Any
 from agent_quality_mcp.decision import BlockerFixability, BlockerKind, DecisionBlocker
 from agent_quality_mcp.models import Diagnostic, DiagnosticSeverity
 
-CompressedGroupKey = tuple[str, str, str, str | None, str, bool]
+RangeKey = tuple[int, int, int, int] | None
+CompressedGroupKey = tuple[str, str, str, str | None, str, RangeKey, bool]
 
 BLOCKER_KIND_ORDER = {
     BlockerKind.REQUEST: 0,
@@ -174,14 +175,18 @@ def _compressed_group_key(group: dict[str, Any]) -> CompressedGroupKey | None:
     message = group.get("message")
     file = group.get("file")
     severity = group.get("severity")
+    raw_range = group.get("range")
+    range_key = _compressed_group_range_key(raw_range)
     is_fixable = group.get("is_fixable", False)
     if not all(isinstance(value, str) for value in (source, code, message, severity)):
         return None
     if file is not None and not isinstance(file, str):
         return None
+    if raw_range is not None and range_key is None:
+        return None
     if not isinstance(is_fixable, bool):
         return None
-    return (source, code, message, file, severity, is_fixable)
+    return (source, code, message, file, severity, range_key, is_fixable)
 
 
 def _compressed_group_key_for_diagnostic(diagnostic: Diagnostic) -> CompressedGroupKey:
@@ -191,5 +196,33 @@ def _compressed_group_key_for_diagnostic(diagnostic: Diagnostic) -> CompressedGr
         diagnostic.message,
         diagnostic.file,
         diagnostic.severity.value,
+        _diagnostic_range_key(diagnostic),
         diagnostic.is_fixable,
+    )
+
+
+def _compressed_group_range_key(raw_range: Any) -> RangeKey:
+    if raw_range is None:
+        return None
+    if not isinstance(raw_range, dict):
+        return None
+    values = (
+        raw_range.get("start_line"),
+        raw_range.get("start_column"),
+        raw_range.get("end_line"),
+        raw_range.get("end_column"),
+    )
+    if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+        return None
+    return values
+
+
+def _diagnostic_range_key(diagnostic: Diagnostic) -> RangeKey:
+    if diagnostic.range is None:
+        return None
+    return (
+        diagnostic.range.start_line,
+        diagnostic.range.start_column,
+        diagnostic.range.end_line,
+        diagnostic.range.end_column,
     )
