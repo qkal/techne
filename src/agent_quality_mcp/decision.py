@@ -188,6 +188,7 @@ def _decision_from_facts(
         return PatchDecision.REVISE_PATCH
     if (
         execution.timed_out
+        or any(record.timed_out for record in execution.commands)
         or BlockerKind.TIMEOUT in kinds
         or BlockerKind.HUMAN_REVIEW in kinds
     ):

@@ -8,6 +8,7 @@ from agent_quality_mcp.decision import (
     build_required_checks,
     decide_validation,
 )
+from agent_quality_mcp.diagnostics import diagnostic_from_message
 from agent_quality_mcp.models import (
     CommandExecutionRecord,
     DiagnosticSeverity,
@@ -112,6 +113,28 @@ def test_decide_validation_routes_timeout_to_human_review_before_tooling() -> No
     assert result.confidence.level == "low"
 
 
+def test_decide_validation_routes_record_timeout_to_human_review_before_tooling() -> None:
+    execution = ExecutionMetadata(
+        commands=[
+            _record("uv"),
+            _record("ruff", timed_out=True),
+            _record("pyright"),
+        ],
+    )
+    checks = build_required_checks(ValidationMode.STANDARD, execution, [])
+
+    result = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[],
+        diagnostics=[],
+        risk_score=RiskScore(score=0, level=RiskLevel.LOW),
+        execution=execution,
+        required_checks=checks,
+    )
+
+    assert result.decision == PatchDecision.REQUEST_HUMAN_REVIEW
+
+
 def test_decide_validation_allows_clean_quick_apply_patch() -> None:
     execution = ExecutionMetadata(commands=[_record("ruff"), _record("pyright")])
     checks = build_required_checks(ValidationMode.QUICK, execution, [])
@@ -128,3 +151,99 @@ def test_decide_validation_allows_clean_quick_apply_patch() -> None:
     assert result.decision == PatchDecision.APPLY_PATCH
     assert result.confidence.level in {"medium", "high"}
     assert result.summary.title == "Patch validation passed"
+
+
+def test_tool_unavailable_diagnostic_marks_required_check_incomplete() -> None:
+    diagnostic = diagnostic_from_message(
+        source="system",
+        code="tool_unavailable",
+        message="pyright is unavailable",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        metadata={"tool": "pyright"},
+    )
+    execution = ExecutionMetadata(commands=[_record("uv"), _record("ruff")])
+    checks = build_required_checks(ValidationMode.STANDARD, execution, [diagnostic])
+
+    result = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[],
+        diagnostics=[diagnostic],
+        risk_score=RiskScore(score=0, level=RiskLevel.LOW),
+        execution=execution,
+        required_checks=checks,
+    )
+
+    by_tool = {check.tool: check for check in checks}
+    assert by_tool["pyright"].completed is False
+    assert by_tool["pyright"].reason == "pyright is unavailable"
+    assert result.decision == PatchDecision.FIX_TOOLING
+
+
+def test_tool_availability_false_marks_attempted_required_check_incomplete() -> None:
+    execution = ExecutionMetadata(
+        commands=[_record("uv"), _record("ruff"), _record("pyright")],
+        tool_availability={"pyright": False},
+    )
+    checks = build_required_checks(ValidationMode.STANDARD, execution, [])
+
+    by_tool = {check.tool: check for check in checks}
+    assert by_tool["pyright"].completed is False
+    assert by_tool["pyright"].reason == "pyright is unavailable"
+
+
+def test_decide_validation_routes_patch_before_timeout_blocker() -> None:
+    result = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[_blocker(BlockerKind.TIMEOUT), _blocker(BlockerKind.PATCH)],
+        diagnostics=[],
+        risk_score=RiskScore(score=0, level=RiskLevel.LOW),
+        execution=ExecutionMetadata(),
+        required_checks=[],
+    )
+
+    assert result.decision == PatchDecision.REVISE_PATCH
+
+
+def test_decide_validation_routes_tooling_before_quality() -> None:
+    result = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[_blocker(BlockerKind.QUALITY), _blocker(BlockerKind.TOOLING)],
+        diagnostics=[],
+        risk_score=RiskScore(score=0, level=RiskLevel.LOW),
+        execution=ExecutionMetadata(),
+        required_checks=[],
+    )
+
+    assert result.decision == PatchDecision.FIX_TOOLING
+
+
+def test_output_truncated_reduces_confidence_with_factor() -> None:
+    clean_execution = ExecutionMetadata(
+        commands=[_record("uv"), _record("ruff"), _record("pyright")]
+    )
+    clean_checks = build_required_checks(ValidationMode.STANDARD, clean_execution, [])
+    clean = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[],
+        diagnostics=[],
+        risk_score=RiskScore(score=0, level=RiskLevel.LOW),
+        execution=clean_execution,
+        required_checks=clean_checks,
+    )
+    truncated_execution = ExecutionMetadata(
+        commands=[_record("uv"), _record("ruff"), _record("pyright")],
+        output_truncated=True,
+    )
+    truncated_checks = build_required_checks(ValidationMode.STANDARD, truncated_execution, [])
+    truncated = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[],
+        diagnostics=[],
+        risk_score=RiskScore(score=0, level=RiskLevel.LOW),
+        execution=truncated_execution,
+        required_checks=truncated_checks,
+    )
+
+    assert "command output was truncated" in truncated.confidence.factors
+    assert truncated.confidence.score < clean.confidence.score
