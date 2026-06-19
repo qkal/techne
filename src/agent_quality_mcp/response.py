@@ -20,6 +20,7 @@ from agent_quality_mcp.decision import (
     DecisionBlocker,
     DecisionSummary,
     InternalDecisionResult,
+    PatchDecision,
     build_required_checks,
     decide_validation,
 )
@@ -62,7 +63,7 @@ class ValidatePatchResponse(AgentQualityBaseModel):
     workspace_root: str
     mode: ValidationMode
     safety_mode: SafetyMode
-    decision: str
+    decision: PatchDecision
     confidence: Confidence
     summary: DecisionSummary
     blockers: list[DecisionBlocker] = Field(default_factory=list)
@@ -226,7 +227,7 @@ def _assemble_response(
         workspace_root=workspace_root,
         mode=mode,
         safety_mode=safety_mode,
-        decision=decision_result.decision.value,
+        decision=decision_result.decision,
         confidence=decision_result.confidence,
         summary=decision_result.summary,
         blockers=decision_result.blockers,

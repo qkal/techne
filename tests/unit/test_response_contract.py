@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent_quality_mcp.decision import PatchDecision
 from agent_quality_mcp.diagnostics import diagnostic_from_message
 from agent_quality_mcp.models import (
     AuditSummary,
@@ -92,7 +93,8 @@ def test_build_validate_patch_response_returns_apply_patch_for_clean_quick_run()
         shadow_workspace_used=True,
     )
 
-    assert response.decision == "apply_patch"
+    assert response.decision is PatchDecision.APPLY_PATCH
+    assert response.model_dump(mode="json")["decision"] == "apply_patch"
     assert response.blockers == []
     assert response.fix_plan is None
     assert response.evidence.command_outcomes == [
