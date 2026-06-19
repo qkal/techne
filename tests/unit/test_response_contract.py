@@ -17,6 +17,7 @@ from agent_quality_mcp.response import (
 )
 
 WORKSPACE_ROOT = "/tmp/demo"  # noqa: S108 - Phase 2 contract uses this sample path.
+INVALID_REQUEST_MESSAGE = "Invalid validate_patch request"
 
 
 def _record(command: str) -> CommandExecutionRecord:
@@ -36,7 +37,7 @@ def test_build_error_response_uses_phase_2_contract() -> None:
         mode="quick",
         safety_mode="read_only",
         code="invalid_request",
-        message="Invalid validate_patch request",
+        message=INVALID_REQUEST_MESSAGE,
     )
 
     payload = response.model_dump(mode="json")
@@ -46,10 +47,27 @@ def test_build_error_response_uses_phase_2_contract() -> None:
     assert payload["mode"] == "quick"
     assert payload["safety_mode"] == "read_only"
     assert payload["confidence"]["level"] == "high"
+    assert payload["summary"]["detail"] == INVALID_REQUEST_MESSAGE
     assert payload["blockers"][0]["kind"] == "request"
     assert payload["next_actions"][0]["kind"] == "stop"
     assert "status" not in payload
     assert "blocking_errors" not in payload
+
+
+def test_build_error_response_defaults_invalid_mode_and_safety() -> None:
+    response = build_error_response(
+        request_id="req-1",
+        workspace_root=WORKSPACE_ROOT,
+        mode="unknown",
+        safety_mode="unsafe",
+        code="invalid_request",
+        message=INVALID_REQUEST_MESSAGE,
+    )
+
+    payload = response.model_dump(mode="json")
+
+    assert payload["mode"] == "standard"
+    assert payload["safety_mode"] == "read_only"
 
 
 def test_build_validate_patch_response_returns_apply_patch_for_clean_quick_run() -> None:
@@ -76,6 +94,34 @@ def test_build_validate_patch_response_returns_apply_patch_for_clean_quick_run()
     assert response.decision == "apply_patch"
     assert response.blockers == []
     assert response.fix_plan is None
+    assert response.evidence.command_outcomes == [
+        {
+            "command": "ruff",
+            "exit_code": 0,
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        },
+        {
+            "command": "pyright",
+            "exit_code": 0,
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        },
+    ]
+    assert response.evidence.tool_availability == {"ruff": True, "pyright": True}
+    required_checks = {
+        check["tool"]: check for check in response.model_dump(mode="json")["evidence"][
+            "required_checks"
+        ]
+    }
+    assert required_checks["uv"]["required"] is False
+    assert required_checks["uv"]["completed"] is False
+    assert required_checks["ruff"]["required"] is True
+    assert required_checks["ruff"]["completed"] is True
+    assert required_checks["pyright"]["required"] is True
+    assert required_checks["pyright"]["completed"] is True
     assert response.evidence.real_workspace_modified is False
     assert response.evidence.shadow_workspace_used is True
 

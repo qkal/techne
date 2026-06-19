@@ -256,7 +256,9 @@ def _summary_for_decision(
         PatchDecision.REQUEST_HUMAN_REVIEW: "Validation needs human review",
         PatchDecision.REJECT_REQUEST: "Validation request rejected",
     }
-    if _missing_required_checks(required_checks):
+    if decision == PatchDecision.REJECT_REQUEST and blockers:
+        detail = blockers[0].details
+    elif _missing_required_checks(required_checks):
         detail = "One or more required checks did not complete."
     elif blockers:
         detail = blockers[0].details

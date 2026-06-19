@@ -72,6 +72,25 @@ def test_decide_validation_rejects_security_before_quality() -> None:
     assert result.summary.blocker_count == 2
 
 
+def test_reject_request_summary_prefers_blocker_detail_over_missing_checks() -> None:
+    blocker = _blocker(BlockerKind.REQUEST)
+    blocker.details = "Invalid validate_patch request"
+    execution = ExecutionMetadata()
+    checks = build_required_checks(ValidationMode.STANDARD, execution, [])
+
+    result = decide_validation(
+        mode=ValidationMode.STANDARD,
+        blockers=[blocker],
+        diagnostics=[],
+        risk_score=RiskScore(score=100, level=RiskLevel.CRITICAL),
+        execution=execution,
+        required_checks=checks,
+    )
+
+    assert result.decision == PatchDecision.REJECT_REQUEST
+    assert result.summary.detail == "Invalid validate_patch request"
+
+
 def test_decide_validation_routes_missing_required_check_to_fix_tooling() -> None:
     execution = ExecutionMetadata(
         commands=[_record("uv"), _record("ruff")],
