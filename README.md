@@ -104,34 +104,64 @@ Example response excerpt:
 ```json
 {
   "request_id": "demo-1",
-  "status": "passed",
   "workspace_root": "/path/to/python-project",
   "mode": "quick",
   "safety_mode": "preview_safe_fixes",
-  "real_workspace_modified": false,
-  "shadow_workspace_used": true,
-  "blocking_errors": [],
-  "warnings": [],
-  "risk_score": {
-    "score": 0,
-    "level": "low",
-    "factors": []
+  "decision": "apply_patch",
+  "confidence": {
+    "score": 80,
+    "level": "high",
+    "rationale": ["No blockers remain after required checks."],
+    "factors": ["quick mode has reduced validation depth"]
   },
-  "execution": {
-    "commands": [
-      {
-        "command": "ruff",
-        "args": ["ruff", "check", "--no-cache", "--output-format", "json", "--", "src/example.py"],
-        "cwd": "/tmp/agent-quality-mcp-.../workspace",
-        "exit_code": 0,
-        "stdout_truncated": false,
-        "stderr_truncated": false
-      }
-    ],
-    "output_truncated": false
+  "summary": {
+    "title": "Patch validation passed",
+    "detail": "All required checks completed without blockers.",
+    "blocker_count": 0,
+    "warning_count": 0
+  },
+  "blockers": [],
+  "next_actions": [
+    {
+      "id": "apply-patch",
+      "kind": "rerun",
+      "priority": 1,
+      "title": "Apply patch",
+      "safe_to_run": false,
+      "requires_human": false
+    }
+  ],
+  "fix_plan": null,
+  "evidence": {
+    "diagnostic_count": 0,
+    "total_diagnostic_count": 0,
+    "returned_diagnostic_count": 0,
+    "diagnostics_truncated": false,
+    "real_workspace_modified": false,
+    "shadow_workspace_used": true,
+    "risk_score": {
+      "score": 0,
+      "level": "low",
+      "factors": []
+    }
   }
 }
 ```
+
+Phase 2 moved decision details into grouped response sections:
+
+| Phase 1 field | Phase 2 location |
+| --- | --- |
+| `status` | `decision` |
+| `blocking_errors` | `blockers` |
+| `warnings` / `info` | `evidence` and grouped `blockers` |
+| `suggested_actions` | `next_actions` |
+| `safe_fixes` | `fix_plan.safe_fix_previews` |
+| `risk_score` | `evidence.risk_score` |
+| `context_summary` | `evidence.compressed_groups` and diagnostic counts |
+
+Diagnostic truncation is exposed through `evidence.diagnostics_truncated`,
+`evidence.total_diagnostic_count`, and `evidence.returned_diagnostic_count`.
 
 ### `inspect_workspace`
 
