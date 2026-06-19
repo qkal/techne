@@ -332,9 +332,10 @@ def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
     assert captured["kwargs"]["timeout"] == config.subprocess_timeout_seconds
     assert captured["kwargs"]["check"] is False
 
+    expected_path = str(Path("/bin").resolve(strict=True))
     env = captured["kwargs"]["env"]
     assert env == {
-        "PATH": "/bin",
+        "PATH": expected_path,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "UV_NO_ENV_FILE": "1",
