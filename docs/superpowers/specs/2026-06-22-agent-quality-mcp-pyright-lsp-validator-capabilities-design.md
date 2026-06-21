@@ -127,12 +127,25 @@ Required changes:
   example `CommandConfig.pyright_langserver`.
 - Optionally support a trusted environment variable such as
   `AGENT_QUALITY_MCP_PYRIGHT_LANGSERVER`.
+- Add an explicit command-to-config-field mapping so the public executable name
+  `pyright-langserver` maps to the Python field `pyright_langserver`. The
+  resolver must not call `getattr(config.command_paths, command)` directly for
+  hyphenated command names.
 - Continue rejecting command paths supplied by untrusted workspace config or
   request overrides.
 - Keep the existing `pyright` CLI command available for fallback.
 
 The service must not infer an executable from a workspace path, `.venv`, package
 script, or project configuration owned by the target workspace.
+
+The existing finite `CommandRunner.run` and `run_with_output` APIs are not the
+right process boundary for LSP because they close stdin and wait for process
+exit. The implementation should add a small long-running process launcher for
+LSP that reuses allowlisted command resolution, safe environment construction,
+workspace-owned executable rejection, argument-list execution, and timeout
+policy. It should expose only stdin/stdout/stderr streams needed by the protocol
+layer and should still record response-safe lifecycle metadata for execution
+evidence.
 
 ## Validator Capability API
 
@@ -255,12 +268,20 @@ pyright-langserver --stdio
 through allowlisted command resolution and argument-list execution.
 
 The manager initializes the server using LSP initialize/initialized messages and
-workspace-folder support. For each validation request, the provider opens the
-shadow workspace as the active workspace folder. When changed-file diagnostics
-are requested, it opens the changed Python documents from the shadow workspace
-and collects diagnostics for those files. When workspace diagnostics are
-requested, it waits for workspace diagnostics associated with the shadow
-workspace until completion or timeout.
+workspace-folder support. The real workspace path is a manager key only: it
+must not be sent as `rootUri`, `rootPath`, or an initial workspace folder. The
+preferred initialization is no root plus empty workspace folders. If Pyright LSP
+requires an initial root, the implementation may use the first request's shadow
+workspace only if that root can be removed during cleanup. It must never
+initialize the server against the real workspace. If safe initialization is not
+possible, the provider falls back to Pyright CLI.
+
+For each validation request, the provider opens the shadow workspace as the
+active workspace folder. When changed-file diagnostics are requested, it opens
+the changed Python documents from the shadow workspace and collects diagnostics
+for those files. When workspace diagnostics are requested, it waits for
+workspace diagnostics associated with the shadow workspace until completion or
+timeout.
 
 Mode behavior:
 
@@ -282,6 +303,60 @@ It reports metadata:
 
 The provider must not expose completions, hover, code actions, import
 organization, formatting, or symbol features in this phase.
+
+LSP `textDocument/publishDiagnostics` payloads are not the same shape as
+Pyright CLI `--outputjson` output. The implementation should add a dedicated
+normalizer or conversion layer for LSP diagnostics, including `file://` URI
+normalization, range conversion, severity mapping, and shadow-root validation.
+It should not pass raw LSP notification payloads into the current Pyright CLI
+JSON normalizer.
+
+## Concurrency And Diagnostic Ownership
+
+Reusable LSP processes introduce request state. The first implementation should
+serialize Pyright LSP validations per real-workspace manager. A later version
+may support concurrent leases, but only after diagnostics can be attributed
+unambiguously to independent shadow roots.
+
+During a request, the provider must count only diagnostics whose document URI is
+inside the active shadow workspace. Diagnostics for previous shadow workspaces,
+the real workspace, or unrelated folders must be ignored and should trigger
+process discard if they indicate leaked workspace state after cleanup.
+
+If a second validation request arrives for the same real workspace while an LSP
+validation is active, it should wait for the manager lock or fall back to the
+Pyright CLI path after a bounded wait. It should not open two shadow workspace
+folders concurrently in the same Pyright process for this phase.
+
+## Diagnostic Completion
+
+Standard LSP diagnostics arrive as notifications, so "complete" must be defined
+by the provider rather than assumed from a single response.
+
+For changed-file scope, completion means each expected changed Python document
+has received at least one `publishDiagnostics` notification or the LSP timeout
+has expired. An empty diagnostics list for a file is valid only after receiving
+that file's notification.
+
+For workspace scope, completion means the server has produced diagnostics for
+the active shadow workspace and then remained quiet for a short bounded
+stability window, or the LSP timeout has expired. If Pyright exposes progress or
+status notifications that reliably indicate analysis completion, the provider
+may use them in addition to the quiet window. It must still enforce the timeout.
+
+The implementation must prove that workspace-scope LSP diagnostics cover the
+same project surface that `pyright --outputjson` would cover for the shadow
+workspace. If Pyright LSP cannot reliably report diagnostics for unopened files
+in `standard` or `strict`, the provider must treat the LSP result as incomplete
+and use the Pyright CLI fallback for the authoritative workspace-scope result.
+It must not silently return changed-file-only or opened-file-only diagnostics
+for a workspace-scope request.
+
+Timeout or ambiguous completion should produce a non-blocking LSP warning and
+trigger Pyright CLI fallback. The fallback result, not a partial LSP result,
+should be treated as the authoritative Pyright diagnostic result for that
+request unless the implementation can prove the partial LSP result is complete
+for the requested scope.
 
 ## Data Flow
 
@@ -343,6 +418,8 @@ Safety requirements:
 - Proposed patches are still applied only in shadow workspaces.
 - Pyright LSP receives shadow workspace folders, not patched real workspaces.
 - Real workspace identity is used only for manager ownership and lifecycle.
+- The real workspace path is never sent as an LSP root, workspace folder, or
+  opened document URI during patched validation.
 - Commands are executed with argument lists and `shell=False`.
 - Workspace-owned executables are not trusted.
 - LSP messages are parsed with explicit byte limits and timeouts.
@@ -390,10 +467,25 @@ Unit tests should cover:
 - Request ID matching and notification handling.
 - LSP process startup with `pyright-langserver --stdio` through allowlisted
   command resolution.
+- Explicit command-to-config-field mapping for `pyright-langserver` to
+  `pyright_langserver`.
+- The LSP process launcher reusing safe command resolution and safe
+  environment construction without using finite `subprocess.run` semantics.
+- Initialization never sending the real workspace as `rootUri`, `rootPath`, or
+  a workspace folder.
 - Manager reuse for the same real workspace.
 - Manager isolation across different real workspaces.
+- Per-real-workspace LSP request serialization or bounded fallback when the
+  manager is already busy.
 - Shadow workspace open/close per request.
 - Opened document cleanup per request.
+- Ignoring or rejecting diagnostics outside the active shadow workspace.
+- Changed-file completion requiring diagnostics notifications for all expected
+  Python files.
+- Workspace-scope completion using progress/status signals when available plus
+  a bounded quiet window and hard timeout.
+- Workspace-scope LSP coverage proving unopened files are included, otherwise
+  falling back to Pyright CLI.
 - `quick` changed-file diagnostic scope.
 - `standard` workspace diagnostic scope.
 - `strict` workspace diagnostic scope.
