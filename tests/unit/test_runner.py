@@ -5,7 +5,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent_quality_mcp.cli.runner import CommandRunner, resolve_allowed_command
+import pytest
+
+from agent_quality_mcp.cli.runner import (
+    CommandRunner,
+    resolve_allowed_command,
+    start_long_running_command,
+)
 from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandConfig
 
@@ -178,6 +184,42 @@ def test_resolve_allowed_command_rejects_workspace_symlink_path_directory(
         raise AssertionError("workspace-owned PATH symlink directories should be rejected")
 
 
+def test_resolve_allowed_command_supports_pyright_langserver_configured_path(
+    tmp_path: Path,
+) -> None:
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    executable = tool_dir / "pyright-langserver"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o700)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = AgentQualityConfig(
+        command_paths=CommandConfig(pyright_langserver=str(executable))
+    )
+
+    resolved = resolve_allowed_command("pyright-langserver", config, cwd=workspace)
+
+    assert resolved == str(executable.resolve())
+
+
+def test_resolve_allowed_command_rejects_workspace_owned_pyright_langserver(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    tool_dir = workspace / "bin"
+    tool_dir.mkdir(parents=True)
+    executable = tool_dir / "pyright-langserver"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o700)
+    config = AgentQualityConfig(
+        command_paths=CommandConfig(pyright_langserver=str(executable))
+    )
+
+    with pytest.raises(SecurityError, match="must not be inside the workspace"):
+        resolve_allowed_command("pyright-langserver", config, cwd=workspace)
+
+
 def test_command_runner_rejects_project_bound_absolute_path_entries(
     monkeypatch,
     tmp_path: Path,
@@ -284,6 +326,56 @@ def test_command_runner_rejects_workspace_symlink_configured_executable(
         pass
     else:
         raise AssertionError("workspace-owned configured symlink should be rejected")
+
+
+def test_start_long_running_command_uses_allowlist_and_safe_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    executable = tool_dir / "pyright-langserver"
+    executable.write_text("#!/bin/sh\ncat\n", encoding="utf-8")
+    executable.chmod(0o700)
+    config = AgentQualityConfig(
+        command_paths=CommandConfig(pyright_langserver=str(executable))
+    )
+    captured: dict[str, object] = {}
+
+    class FakePopen:
+        stdin = object()
+        stdout = object()
+        stderr = object()
+        pid = 123
+
+        def __init__(self, args: list[str], **kwargs: object) -> None:
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    process = start_long_running_command(
+        "pyright-langserver",
+        ["--stdio"],
+        cwd=workspace,
+        config=config,
+    )
+
+    assert process.command == "pyright-langserver"
+    assert process.args == ["pyright-langserver", "--stdio"]
+    assert captured["args"] == [str(executable.resolve()), "--stdio"]
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["shell"] is False
+    assert kwargs["cwd"] == str(workspace)
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert "UV_NO_ENV_FILE" in env
 
 
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(

@@ -302,6 +302,19 @@ def test_load_config_reads_trusted_command_paths_from_environment(
     assert config.command_paths.ruff == "/opt/tools/ruff"
 
 
+def test_load_config_accepts_trusted_pyright_langserver_env_path(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable = tmp_path / "pyright-langserver"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_QUALITY_MCP_PYRIGHT_LANGSERVER", str(executable))
+
+    config = load_config(tmp_path)
+
+    assert config.command_paths.pyright_langserver == str(executable)
+
+
 def test_load_config_rejects_excessive_secret_pattern_length(tmp_path: Path) -> None:
     try:
         load_config(tmp_path, {"secret_redaction_patterns": ["a" * 501]})
