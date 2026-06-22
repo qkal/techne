@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import select
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -233,6 +234,8 @@ class PyrightLspProcessSession:
         self._next_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
         self._open_workspace_uris: set[str] = set()
+        self._open_document_uris_by_workspace_uri: dict[str, set[str]] = {}
+        self._request_lock = threading.RLock()
 
     def collect_diagnostics(
         self,
@@ -244,6 +247,22 @@ class PyrightLspProcessSession:
     ) -> tuple[RawLspDiagnostics | None, str | None]:
         """Open changed Python files and wait for their Pyright diagnostics."""
 
+        with self._request_lock:
+            return self._collect_diagnostics_unlocked(
+                shadow_root=shadow_root,
+                changed_files=changed_files,
+                scope=scope,
+                timeout_seconds=timeout_seconds,
+            )
+
+    def _collect_diagnostics_unlocked(
+        self,
+        *,
+        shadow_root: Path,
+        changed_files: list[Path],
+        scope: ValidatorScope,
+        timeout_seconds: float,
+    ) -> tuple[RawLspDiagnostics | None, str | None]:
         deadline = time.perf_counter() + max(0.0, timeout_seconds)
         try:
             shadow_root_resolved = shadow_root.resolve()
@@ -263,21 +282,7 @@ class PyrightLspProcessSession:
                 return {}, None
 
             for document_path in expected_documents:
-                uri = lsp_uri_from_path(document_path)
-                self._send(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/didOpen",
-                        "params": {
-                            "textDocument": {
-                                "uri": uri,
-                                "languageId": "python",
-                                "version": 1,
-                                "text": document_path.read_text(encoding="utf-8"),
-                            }
-                        },
-                    }
-                )
+                self._open_shadow_document(shadow_root_resolved, document_path)
 
             raw_by_uri: RawLspDiagnostics = {}
             while time.perf_counter() < deadline:
@@ -356,6 +361,66 @@ class PyrightLspProcessSession:
             }
         )
         self._open_workspace_uris.add(uri)
+
+    def _open_shadow_document(self, shadow_root: Path, document_path: Path) -> None:
+        workspace_uri = lsp_uri_from_path(shadow_root)
+        uri = lsp_uri_from_path(document_path)
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "python",
+                        "version": 1,
+                        "text": document_path.read_text(encoding="utf-8"),
+                    }
+                },
+            }
+        )
+        self._open_document_uris_by_workspace_uri.setdefault(workspace_uri, set()).add(uri)
+
+    def close_shadow_root(self, shadow_root: Path) -> None:
+        """Remove a request-scoped shadow workspace from the Pyright session."""
+
+        with self._request_lock:
+            shadow_root_resolved = shadow_root.resolve()
+            workspace_uri = lsp_uri_from_path(shadow_root_resolved)
+            document_uris = self._open_document_uris_by_workspace_uri.pop(
+                workspace_uri,
+                set(),
+            )
+            for document_uri in sorted(document_uris):
+                self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didClose",
+                        "params": {"textDocument": {"uri": document_uri}},
+                    }
+                )
+
+            if workspace_uri not in self._open_workspace_uris:
+                return
+
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "workspace/didChangeWorkspaceFolders",
+                    "params": {
+                        "event": {
+                            "added": [],
+                            "removed": [
+                                {
+                                    "uri": workspace_uri,
+                                    "name": shadow_root_resolved.name,
+                                }
+                            ],
+                        }
+                    },
+                }
+            )
+            self._open_workspace_uris.remove(workspace_uri)
 
     def _next_request_id(self) -> int:
         request_id = self._next_id

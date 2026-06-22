@@ -183,7 +183,7 @@ def _command_record(
     )
 
 
-def _sent_lsp_messages(process: FakeByteProcess) -> list[dict[str, Any]]:
+def _sent_lsp_messages(process: Any) -> list[dict[str, Any]]:
     framer = LspFramer(max_message_bytes=65536)
     return framer.feed(bytes(process.stdin.written))
 
@@ -239,6 +239,134 @@ def test_pyright_lsp_process_session_initializes_without_workspace_root(
         {"uri": lsp_uri_from_path(shadow_root), "name": shadow_root.name}
     ]
     assert workspace_change["params"]["event"]["removed"] == []
+
+
+def test_pyright_lsp_process_session_serializes_collection(
+    tmp_path: Path,
+) -> None:
+    class RecordingLock:
+        def __init__(self) -> None:
+            self.entered = 0
+            self.exited = 0
+
+        def __enter__(self) -> None:
+            self.entered += 1
+
+        def __exit__(
+            self,
+            exc_type: Any,
+            exc: Any,
+            traceback: Any,
+        ) -> None:
+            del exc_type, exc, traceback
+            self.exited += 1
+
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    process = FakeByteProcess(
+        [{"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+    lock = RecordingLock()
+    cast(Any, session)._request_lock = lock
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri == {}
+    assert fallback_reason is None
+    assert lock.entered == 1
+    assert lock.exited == 1
+
+
+def test_pyright_lsp_process_session_closes_shadow_workspace_before_next_request(
+    tmp_path: Path,
+) -> None:
+    first_shadow = tmp_path / "first-shadow"
+    second_shadow = tmp_path / "second-shadow"
+    first_file = first_shadow / "pkg" / "app.py"
+    second_file = second_shadow / "pkg" / "app.py"
+    first_file.parent.mkdir(parents=True)
+    second_file.parent.mkdir(parents=True)
+    first_file.write_text("first = 1\n", encoding="utf-8")
+    second_file.write_text("second = 2\n", encoding="utf-8")
+    first_uri = lsp_uri_from_path(first_file)
+    second_uri = lsp_uri_from_path(second_file)
+    process = FakeChunkedProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": first_uri, "diagnostics": []},
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": second_uri, "diagnostics": []},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    first_result, first_reason = session.collect_diagnostics(
+        shadow_root=first_shadow,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+    session.close_shadow_root(first_shadow)
+    second_result, second_reason = session.collect_diagnostics(
+        shadow_root=second_shadow,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert first_result == {first_uri: []}
+    assert first_reason is None
+    assert second_result == {second_uri: []}
+    assert second_reason is None
+    sent_messages = _sent_lsp_messages(process)
+    first_workspace_changes = [
+        message
+        for message in sent_messages
+        if message.get("method") == "workspace/didChangeWorkspaceFolders"
+        and message["params"]["event"]["removed"]
+    ]
+    assert first_workspace_changes == [
+        {
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWorkspaceFolders",
+            "params": {
+                "event": {
+                    "added": [],
+                    "removed": [
+                        {
+                            "uri": lsp_uri_from_path(first_shadow),
+                            "name": first_shadow.name,
+                        }
+                    ],
+                }
+            },
+        }
+    ]
+    did_close_messages = [
+        message
+        for message in sent_messages
+        if message.get("method") == "textDocument/didClose"
+    ]
+    assert did_close_messages == [
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/didClose",
+            "params": {"textDocument": {"uri": first_uri}},
+        }
+    ]
 
 
 def test_pyright_lsp_process_session_opens_changed_python_files(
