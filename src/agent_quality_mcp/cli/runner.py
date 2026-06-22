@@ -165,6 +165,7 @@ def start_long_running_command(
     args: list[str],
     cwd: Path,
     config: AgentQualityConfig,
+    process_cwd: Path | None = None,
 ) -> LongRunningCommand:
     """Start an allowlisted long-running command with safe env and pipes."""
 
@@ -173,11 +174,12 @@ def start_long_running_command(
     except SecurityError as exc:
         raise CommandExecutionError(str(exc)) from exc
     safe_env = _safe_environment(config, cwd)
+    launch_cwd = process_cwd or cwd
     started_at = time.monotonic()
     try:
         process = subprocess.Popen(  # noqa: S603 - executable is allowlist-resolved.
             [executable, *args],
-            cwd=str(cwd),
+            cwd=str(launch_cwd),
             env=safe_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -192,7 +194,7 @@ def start_long_running_command(
     return LongRunningCommand(
         command=command,
         args=[command, *args],
-        cwd=str(cwd),
+        cwd=str(launch_cwd),
         process=process,
         started_at=started_at,
     )

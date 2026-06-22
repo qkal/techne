@@ -221,6 +221,10 @@ class PyrightLspManager(Protocol):
         """Return the reusable Pyright LSP session for a real workspace root."""
         ...
 
+    def discard_session(self, real_workspace_root: Path) -> None:
+        """Close and remove a failed reusable session."""
+        ...
+
 
 class PyrightCliAdapter(Protocol):
     def check(
@@ -423,6 +427,17 @@ class PyrightLspProcessSession:
                 self._close_shadow_root_unlocked(shadow_root.resolve(), deadline=deadline)
             except Exception as exc:
                 self._last_cleanup_error = str(exc) or exc.__class__.__name__
+
+    def is_healthy(self) -> bool:
+        """Return whether the cached process is alive and cleanup state is reusable."""
+
+        return self._last_cleanup_error is None and _process_is_alive(self.process)
+
+    def close(self) -> None:
+        """Terminate the underlying language-server process."""
+
+        with self._request_lock:
+            _close_process(self.process)
 
     def _close_shadow_root_unlocked(
         self,
@@ -731,6 +746,7 @@ class PyrightLspProvider:
                 started_at=started_at,
                 documents_opened=documents_opened,
                 lsp_tool_unavailable=True,
+                discard_lsp_session=True,
             )
         except Exception as exc:
             return self._fallback(
@@ -738,6 +754,7 @@ class PyrightLspProvider:
                 reason=str(exc) or exc.__class__.__name__,
                 started_at=started_at,
                 documents_opened=documents_opened,
+                discard_lsp_session=True,
             )
         finally:
             _close_shadow_root(self.manager, request.shadow_workspace_root)
@@ -770,6 +787,7 @@ class PyrightLspProvider:
             reason=fallback_reason or "pyright LSP diagnostics unavailable",
             started_at=started_at,
             documents_opened=documents_opened,
+            discard_lsp_session=_should_discard_lsp_session(fallback_reason),
         )
 
     def _fallback(
@@ -780,7 +798,10 @@ class PyrightLspProvider:
         started_at: float,
         documents_opened: list[str],
         lsp_tool_unavailable: bool = False,
+        discard_lsp_session: bool = False,
     ) -> ValidatorResult:
+        if discard_lsp_session:
+            self.manager.discard_session(request.real_workspace_root)
         fallback_diagnostic = diagnostic_from_message(
             source="pyright",
             code="lsp_fallback",
@@ -883,6 +904,66 @@ def _pyright_cli_unavailable(reason: str) -> Diagnostic:
     )
 
 
+def _should_discard_lsp_session(fallback_reason: str | None) -> bool:
+    return fallback_reason != "workspace diagnostics incomplete"
+
+
+def _process_is_alive(process: object) -> bool:
+    poll = getattr(process, "poll", None)
+    if not callable(poll):
+        return True
+    try:
+        return poll() is None
+    except Exception:
+        return False
+
+
+def _close_process(process: object) -> None:
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(process, stream_name, None)
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:
+                _ignore_process_cleanup_error(exc)
+
+    if not _process_is_alive(process):
+        return
+
+    terminate = getattr(process, "terminate", None)
+    if callable(terminate):
+        try:
+            terminate()
+        except Exception as exc:
+            _ignore_process_cleanup_error(exc)
+    _wait_for_process_exit(process, timeout=1.0)
+    if not _process_is_alive(process):
+        return
+
+    kill = getattr(process, "kill", None)
+    if callable(kill):
+        try:
+            kill()
+        except Exception as exc:
+            _ignore_process_cleanup_error(exc)
+    _wait_for_process_exit(process, timeout=1.0)
+
+
+def _wait_for_process_exit(process: object, *, timeout: float) -> None:
+    wait = getattr(process, "wait", None)
+    if not callable(wait):
+        return
+    try:
+        wait(timeout=timeout)
+    except Exception as exc:
+        _ignore_process_cleanup_error(exc)
+
+
+def _ignore_process_cleanup_error(exc: Exception) -> None:
+    del exc
+
+
 def _duration_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
@@ -902,6 +983,10 @@ class RealPyrightLspManager:
         key = real_workspace_root.resolve()
         with self._lock:
             session = self._sessions.get(key)
+            if session is not None and not session.is_healthy():
+                session.close()
+                self._sessions.pop(key, None)
+                session = None
             if session is None:
                 session = _start_process_session(key, config)
                 self._sessions[key] = session
@@ -910,6 +995,20 @@ class RealPyrightLspManager:
     def close_shadow_root(self, shadow_root: Path) -> None:
         for session in list(self._sessions.values()):
             session.close_shadow_root(shadow_root)
+
+    def discard_session(self, real_workspace_root: Path) -> None:
+        key = real_workspace_root.resolve()
+        with self._lock:
+            session = self._sessions.pop(key, None)
+        if session is not None:
+            session.close()
+
+    def close_all(self) -> None:
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            session.close()
 
 
 def _start_process_session(
@@ -921,6 +1020,7 @@ def _start_process_session(
         ["--stdio"],
         cwd=real_workspace_root,
         config=config,
+        process_cwd=Path(os.sep),
     )
     return PyrightLspProcessSession(
         process=command.process,

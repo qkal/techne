@@ -433,6 +433,12 @@ def _build_pyright_provider(runner: CommandRunner) -> PyrightLspProvider:
     )
 
 
+def close_pyright_lsp_manager() -> None:
+    """Close reusable Pyright language-server sessions."""
+
+    _PYRIGHT_LSP_MANAGER.close_all()
+
+
 def _adapter_call(tool: str, call: Callable[[], tuple], fallback_empty: tuple) -> tuple:
     try:
         return call()

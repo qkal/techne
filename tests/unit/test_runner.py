@@ -378,6 +378,53 @@ def test_start_long_running_command_uses_allowlist_and_safe_environment(
     assert "UV_NO_ENV_FILE" in env
 
 
+def test_start_long_running_command_separates_resolution_cwd_from_process_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    neutral_cwd = tmp_path / "neutral"
+    neutral_cwd.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    executable = tool_dir / "pyright-langserver"
+    executable.write_text("#!/bin/sh\ncat\n", encoding="utf-8")
+    executable.chmod(0o700)
+    config = AgentQualityConfig(
+        command_paths=CommandConfig(pyright_langserver=str(executable))
+    )
+    captured: dict[str, object] = {}
+
+    class FakePopen:
+        stdin = object()
+        stdout = object()
+        stderr = object()
+        pid = 123
+
+        def __init__(self, args: list[str], **kwargs: object) -> None:
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    process = start_long_running_command(
+        "pyright-langserver",
+        ["--stdio"],
+        cwd=workspace,
+        config=config,
+        process_cwd=neutral_cwd,
+    )
+
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["cwd"] == str(neutral_cwd)
+    assert process.cwd == str(neutral_cwd)
+
+
 def test_start_long_running_command_preserves_lsp_frame_bytes(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

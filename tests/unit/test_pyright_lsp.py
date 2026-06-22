@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
+import agent_quality_mcp.lsp.pyright as pyright_lsp_module
 from agent_quality_mcp.diagnostics import diagnostic_from_message
 from agent_quality_mcp.exceptions import ToolUnavailableError
 from agent_quality_mcp.lsp.protocol import LspFramer, build_lsp_message
@@ -33,7 +35,19 @@ RawLspDiagnostics = dict[str, list[dict[str, object]]]
 
 
 class FakeSession:
-    pass
+    def __init__(self, *, alive: bool = True) -> None:
+        self.alive = alive
+        self.closed = False
+        self.closed_shadow_roots: list[Path] = []
+
+    def is_healthy(self) -> bool:
+        return self.alive
+
+    def close(self) -> None:
+        self.closed = True
+
+    def close_shadow_root(self, shadow_root: Path) -> None:
+        self.closed_shadow_roots.append(shadow_root)
 
 
 class FakeByteStdin:
@@ -152,6 +166,7 @@ class FakePyrightLspManager:
         self.cleanup_exception = cleanup_exception
         self.session_roots: list[Path] = []
         self.closed_shadow_roots: list[Path] = []
+        self.discarded_roots: list[Path] = []
 
     def session_for(
         self,
@@ -166,6 +181,9 @@ class FakePyrightLspManager:
         if self.cleanup_exception is not None:
             raise self.cleanup_exception
         self.closed_shadow_roots.append(shadow_root)
+
+    def discard_session(self, real_workspace_root: Path) -> None:
+        self.discarded_roots.append(real_workspace_root)
 
 
 class FakePyrightCliAdapter:
@@ -286,6 +304,118 @@ def test_real_pyright_lsp_manager_separates_workspaces(
 
     assert first is not second
     assert started == [first_workspace.resolve(), second_workspace.resolve()]
+
+
+def test_real_pyright_lsp_manager_replaces_unhealthy_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sessions = [FakeSession(), FakeSession()]
+
+    def fake_start(real_workspace_root: Path, config: AgentQualityConfig) -> FakeSession:
+        del real_workspace_root, config
+        return sessions.pop(0)
+
+    monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
+    manager = RealPyrightLspManager()
+
+    first = cast(FakeSession, manager.session_for(workspace, AgentQualityConfig()))
+    first.alive = False
+    second = cast(FakeSession, manager.session_for(workspace, AgentQualityConfig()))
+
+    assert second is not first
+    assert first.closed is True
+
+
+def test_real_pyright_lsp_manager_discards_failed_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sessions = [FakeSession(), FakeSession()]
+
+    def fake_start(real_workspace_root: Path, config: AgentQualityConfig) -> FakeSession:
+        del real_workspace_root, config
+        return sessions.pop(0)
+
+    monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
+    manager = RealPyrightLspManager()
+
+    first = cast(FakeSession, manager.session_for(workspace, AgentQualityConfig()))
+    manager.discard_session(workspace)
+    second = cast(FakeSession, manager.session_for(workspace, AgentQualityConfig()))
+
+    assert second is not first
+    assert first.closed is True
+
+
+def test_real_pyright_lsp_manager_close_all_closes_and_clears_sessions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first_workspace = tmp_path / "one"
+    second_workspace = tmp_path / "two"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    sessions = [FakeSession(), FakeSession(), FakeSession()]
+
+    def fake_start(real_workspace_root: Path, config: AgentQualityConfig) -> FakeSession:
+        del real_workspace_root, config
+        return sessions.pop(0)
+
+    monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
+    manager = RealPyrightLspManager()
+
+    first = cast(FakeSession, manager.session_for(first_workspace, AgentQualityConfig()))
+    second = cast(FakeSession, manager.session_for(second_workspace, AgentQualityConfig()))
+    manager.close_all()
+    replacement = cast(FakeSession, manager.session_for(first_workspace, AgentQualityConfig()))
+
+    assert first.closed is True
+    assert second.closed is True
+    assert replacement is not first
+
+
+def test_start_process_session_launches_from_neutral_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured: dict[str, object] = {}
+
+    class FakeCommand:
+        process = object()
+
+    def fake_start_long_running_command(
+        command: str,
+        args: list[str],
+        cwd: Path,
+        config: AgentQualityConfig,
+        process_cwd: Path | None = None,
+    ) -> FakeCommand:
+        del config
+        captured["command"] = command
+        captured["args"] = args
+        captured["cwd"] = cwd
+        captured["process_cwd"] = process_cwd
+        return FakeCommand()
+
+    monkeypatch.setattr(
+        pyright_lsp_module,
+        "start_long_running_command",
+        fake_start_long_running_command,
+    )
+
+    pyright_lsp_module._start_process_session(workspace, AgentQualityConfig())
+
+    assert captured["command"] == "pyright-langserver"
+    assert captured["args"] == ["--stdio"]
+    assert captured["cwd"] == workspace
+    assert captured["process_cwd"] == Path(os.sep)
 
 
 def test_pyright_lsp_process_session_initializes_without_workspace_root(
@@ -1017,6 +1147,7 @@ def test_pyright_lsp_provider_falls_back_to_cli_on_lsp_failure(
     assert ValidatorCapability.TYPE_DIAGNOSTICS in result.capabilities
     assert ValidatorCapability.CLI_FALLBACK in result.capabilities
     assert ValidatorCapability.LSP_REUSE not in result.capabilities
+    assert manager.discarded_roots == [request.real_workspace_root]
 
 
 def test_pyright_lsp_provider_falls_back_when_workspace_scope_incomplete(
@@ -1052,6 +1183,7 @@ def test_pyright_lsp_provider_falls_back_when_workspace_scope_incomplete(
     assert result.fallback_reason == "workspace diagnostics incomplete"
     assert result.metadata["fallback_to_cli"] is True
     assert result.metadata["diagnostic_scope"] == "workspace"
+    assert manager.discarded_roots == []
 
 
 def test_pyright_lsp_provider_falls_back_when_lsp_raises(tmp_path: Path) -> None:
@@ -1070,6 +1202,7 @@ def test_pyright_lsp_provider_falls_back_when_lsp_raises(tmp_path: Path) -> None
     assert result.fallback_reason == "initialize failed"
     assert result.metadata["fallback_to_cli"] is True
     assert result.diagnostics[0].code == "lsp_fallback"
+    assert manager.discarded_roots == [request.real_workspace_root]
 
 
 def test_pyright_lsp_provider_keeps_lsp_unavailable_when_cli_fallback_raises(

@@ -62,6 +62,12 @@ class CleanPyrightAdapter:
 
 
 class CleanPyrightLspSession:
+    def is_healthy(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        pass
+
     def collect_diagnostics(
         self,
         *,

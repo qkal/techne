@@ -105,11 +105,15 @@ def _assert_pyright_evidence_or_structured_unavailable(
     response: ValidatePatchResponse,
 ) -> None:
     commands = response.execution.commands
-    if any(command.command in {"pyright", "pyright-langserver"} for command in commands):
+    if any(command.command == "pyright" for command in commands):
         return
 
     diagnostics = [*response.blocking_errors, *response.warnings, *response.info]
-    if any(diagnostic.source == "pyright" for diagnostic in diagnostics):
+    if any(
+        diagnostic.source == "pyright"
+        and diagnostic.metadata.get("transport") == "lsp"
+        for diagnostic in diagnostics
+    ):
         return
 
     assert any(
