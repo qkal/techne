@@ -326,6 +326,7 @@ class PyrightLspProcessSession:
             }
         )
         self._read_until_response(request_id, deadline, operation="initialize")
+        self._reject_buffered_lsp_responses(operation="initialize")
         self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
         self._initialized = True
 
@@ -371,6 +372,12 @@ class PyrightLspProcessSession:
                 raise LspProtocolError(f"Pyright LSP {operation} returned an error")
             return message
         raise TimeoutError(f"Pyright LSP {operation} response incomplete")
+
+    def _reject_buffered_lsp_responses(self, *, operation: str) -> None:
+        if any(_is_lsp_response_message(message) for message in self._pending_messages):
+            raise LspProtocolError(
+                f"Unexpected Pyright LSP response id during {operation}"
+            )
 
     def _read_one_message(self, deadline: float) -> dict[str, Any] | None:
         if self._pending_messages:

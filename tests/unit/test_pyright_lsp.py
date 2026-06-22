@@ -50,6 +50,23 @@ class FakeByteProcess:
         self.stdout = BytesIO(b"".join(build_lsp_message(message) for message in messages))
 
 
+class FakeChunkedStdout:
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        self.chunks = [build_lsp_message(message) for message in messages]
+
+    def read1(self, size: int) -> bytes:
+        del size
+        if not self.chunks:
+            return b""
+        return self.chunks.pop(0)
+
+
+class FakeChunkedProcess:
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        self.stdin = FakeByteStdin()
+        self.stdout = FakeChunkedStdout(messages)
+
+
 class FakePyrightLspSession:
     def __init__(
         self,
@@ -386,7 +403,7 @@ def test_pyright_lsp_process_session_rejects_duplicate_response_id_during_diagno
     changed_file.parent.mkdir(parents=True)
     changed_file.write_text("print('ok')\n", encoding="utf-8")
     uri = lsp_uri_from_path(changed_file)
-    process = FakeByteProcess(
+    process = FakeChunkedProcess(
         [
             {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
             {"jsonrpc": "2.0", "id": 1, "result": {"duplicate": True}},
@@ -408,6 +425,30 @@ def test_pyright_lsp_process_session_rejects_duplicate_response_id_during_diagno
 
     assert raw_by_uri is None
     assert fallback_reason == "Unexpected Pyright LSP response id during diagnostics"
+
+
+def test_pyright_lsp_process_session_rejects_buffered_duplicate_initialize_response(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {"jsonrpc": "2.0", "id": 1, "result": {"duplicate": True}},
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "Unexpected Pyright LSP response id during initialize"
 
 
 def test_pyright_lsp_provider_uses_lsp_for_changed_file_diagnostics(
