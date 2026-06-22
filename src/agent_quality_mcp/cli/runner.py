@@ -13,7 +13,13 @@ from agent_quality_mcp import audit
 from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError, ToolUnavailableError
 from agent_quality_mcp.models import AgentQualityConfig, CommandExecutionRecord
 
-ALLOWED_COMMANDS = {"uv", "ruff", "pyright"}
+ALLOWED_COMMANDS = {"uv", "ruff", "pyright", "pyright-langserver"}
+COMMAND_CONFIG_FIELDS = {
+    "uv": "uv",
+    "ruff": "ruff",
+    "pyright": "pyright",
+    "pyright-langserver": "pyright_langserver",
+}
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,17 @@ class CommandRunResult:
     record: CommandExecutionRecord
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class LongRunningCommand:
+    """Long-running allowlisted process used by streaming protocols."""
+
+    command: str
+    args: list[str]
+    cwd: str
+    process: subprocess.Popen[bytes]
+    started_at: float
 
 
 def resolve_allowed_command(
@@ -35,7 +52,7 @@ def resolve_allowed_command(
     if command not in ALLOWED_COMMANDS:
         raise SecurityError(f"Command is not allowlisted: {command}")
 
-    configured_path = getattr(config.command_paths, command)
+    configured_path = getattr(config.command_paths, COMMAND_CONFIG_FIELDS[command])
     if configured_path is not None:
         path = Path(configured_path)
         if not path.is_absolute():
@@ -141,6 +158,46 @@ class CommandRunner:
             stdout=stdout,
             stderr=stderr,
         )
+
+
+def start_long_running_command(
+    command: str,
+    args: list[str],
+    cwd: Path,
+    config: AgentQualityConfig,
+    process_cwd: Path | None = None,
+) -> LongRunningCommand:
+    """Start an allowlisted long-running command with safe env and pipes."""
+
+    try:
+        executable = resolve_allowed_command(command, config, cwd)
+    except SecurityError as exc:
+        raise CommandExecutionError(str(exc)) from exc
+    safe_env = _safe_environment(config, cwd)
+    launch_cwd = process_cwd or cwd
+    started_at = time.monotonic()
+    try:
+        process = subprocess.Popen(  # noqa: S603 - executable is allowlist-resolved.
+            [executable, *args],
+            cwd=str(launch_cwd),
+            env=safe_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        raise ToolUnavailableError(f"Unable to execute required tool: {command}") from exc
+    except OSError as exc:
+        raise ToolUnavailableError(f"Unable to execute required tool {command}: {exc}") from exc
+
+    return LongRunningCommand(
+        command=command,
+        args=[command, *args],
+        cwd=str(launch_cwd),
+        process=process,
+        started_at=started_at,
+    )
 
 
 def _safe_environment(config: AgentQualityConfig, cwd: Path | None = None) -> dict[str, str]:

@@ -302,6 +302,7 @@ def _diagnostics_for_decision(
         diagnostic
         for diagnostic in diagnostics
         if not _is_optional_tool_unavailable(diagnostic, required_tools)
+        and not _is_transport_fallback_warning(diagnostic)
     ]
 
 
@@ -315,6 +316,10 @@ def _is_optional_tool_unavailable(
         return False
     tool = diagnostic.metadata.get("tool")
     return isinstance(tool, str) and tool not in required_tools
+
+
+def _is_transport_fallback_warning(diagnostic: Diagnostic) -> bool:
+    return diagnostic.source == "pyright" and diagnostic.code == "lsp_fallback"
 
 
 def _validation_mode_or_default(mode: ValidationMode | str | None) -> ValidationMode:

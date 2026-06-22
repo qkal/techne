@@ -47,6 +47,7 @@ TRUSTED_COMMAND_PATH_ENV_VARS = {
     "uv": "AGENT_QUALITY_MCP_UV",
     "ruff": "AGENT_QUALITY_MCP_RUFF",
     "pyright": "AGENT_QUALITY_MCP_PYRIGHT",
+    "pyright_langserver": "AGENT_QUALITY_MCP_PYRIGHT_LANGSERVER",
 }
 
 

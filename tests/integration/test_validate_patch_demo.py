@@ -78,8 +78,9 @@ def test_validate_patch_runs_demo_fixture_in_shadow_workspace(
             assert all(Path(record.cwd) == shadow_path for record in response.execution.commands)
             assert all(Path(record.cwd) != workspace for record in response.execution.commands)
 
-        for tool in ("uv", "ruff", "pyright"):
+        for tool in ("uv", "ruff"):
             _assert_tool_recorded_or_structured_unavailable(response, tool)
+        _assert_tool_recorded_or_structured_unavailable(response, "pyright")
     finally:
         if shadow_path_text is not None:
             shutil.rmtree(Path(shadow_path_text).parent)

@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
+import agent_quality_mcp.server as server_module
 from agent_quality_mcp import tools as tools_module
 from agent_quality_mcp.models import ValidatePatchRequest
 from agent_quality_mcp.response import (
@@ -53,6 +54,25 @@ def test_create_app_registers_named_fastmcp_tools(tmp_path: Path) -> None:
         )
     )
     assert result["workspace_root"] == str(tmp_path.resolve())
+
+
+def test_main_closes_pyright_lsp_manager_after_server_exits(monkeypatch: Any) -> None:
+    events: list[str] = []
+
+    class FakeApp:
+        def run(self) -> None:
+            events.append("run")
+
+    monkeypatch.setattr(server_module, "create_app", lambda: FakeApp())
+    monkeypatch.setattr(
+        server_module,
+        "close_pyright_lsp_manager",
+        lambda: events.append("close"),
+    )
+
+    server_module.main()
+
+    assert events == ["run", "close"]
 
 
 def test_validate_patch_tool_builds_request_and_returns_json_dict(

@@ -94,6 +94,7 @@ class CommandConfig(AgentQualityBaseModel):
     uv: str | None = None
     ruff: str | None = None
     pyright: str | None = None
+    pyright_langserver: str | None = None
 
 
 class AgentQualityConfig(AgentQualityBaseModel):
