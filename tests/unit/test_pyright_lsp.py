@@ -283,7 +283,7 @@ def test_pyright_lsp_process_session_serializes_collection(
     assert lock.exited == 1
 
 
-def test_pyright_lsp_process_session_closes_shadow_workspace_before_next_request(
+def test_pyright_lsp_process_session_closes_shadow_workspace_before_returning(
     tmp_path: Path,
 ) -> None:
     first_shadow = tmp_path / "first-shadow"
@@ -319,7 +319,6 @@ def test_pyright_lsp_process_session_closes_shadow_workspace_before_next_request
         scope=ValidatorScope.CHANGED_FILES,
         timeout_seconds=1.0,
     )
-    session.close_shadow_root(first_shadow)
     second_result, second_reason = session.collect_diagnostics(
         shadow_root=second_shadow,
         changed_files=[Path("pkg/app.py")],
@@ -332,33 +331,28 @@ def test_pyright_lsp_process_session_closes_shadow_workspace_before_next_request
     assert second_result == {second_uri: []}
     assert second_reason is None
     sent_messages = _sent_lsp_messages(process)
-    first_workspace_changes = [
-        message
-        for message in sent_messages
+    first_shadow_uri = lsp_uri_from_path(first_shadow)
+    second_shadow_uri = lsp_uri_from_path(second_shadow)
+    first_remove_index = next(
+        index
+        for index, message in enumerate(sent_messages)
         if message.get("method") == "workspace/didChangeWorkspaceFolders"
         and message["params"]["event"]["removed"]
-    ]
-    assert first_workspace_changes == [
-        {
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWorkspaceFolders",
-            "params": {
-                "event": {
-                    "added": [],
-                    "removed": [
-                        {
-                            "uri": lsp_uri_from_path(first_shadow),
-                            "name": first_shadow.name,
-                        }
-                    ],
-                }
-            },
-        }
-    ]
+        == [{"uri": first_shadow_uri, "name": first_shadow.name}]
+    )
+    second_add_index = next(
+        index
+        for index, message in enumerate(sent_messages)
+        if message.get("method") == "workspace/didChangeWorkspaceFolders"
+        and message["params"]["event"]["added"]
+        == [{"uri": second_shadow_uri, "name": second_shadow.name}]
+    )
+    assert first_remove_index < second_add_index
     did_close_messages = [
         message
         for message in sent_messages
         if message.get("method") == "textDocument/didClose"
+        and message["params"]["textDocument"]["uri"] == first_uri
     ]
     assert did_close_messages == [
         {
