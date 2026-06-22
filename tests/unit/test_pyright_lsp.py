@@ -69,6 +69,18 @@ class FakeBlockedStdin:
         raise AssertionError("flush should not be attempted when stdin is not writable")
 
 
+class FakeFdStdin:
+    def fileno(self) -> int:
+        return 99
+
+    def write(self, data: bytes) -> int:
+        del data
+        raise AssertionError("write should use os.write for fd-backed stdin")
+
+    def flush(self) -> None:
+        raise AssertionError("flush should not be used for fd-backed stdin")
+
+
 class FakeByteProcess:
     def __init__(self, messages: list[dict[str, Any]]) -> None:
         self.stdin = FakeByteStdin()
@@ -330,6 +342,14 @@ def test_pyright_lsp_process_session_cleanup_failure_does_not_mask_result(
 
     assert raw_by_uri is None
     assert fallback_reason == "changed-file diagnostics incomplete"
+    workspace_uri = lsp_uri_from_path(shadow_root)
+    document_uri = lsp_uri_from_path(changed_file)
+    session_state = cast(Any, session)
+    assert workspace_uri in session_state._open_workspace_uris
+    assert (
+        document_uri
+        in session_state._open_document_uris_by_workspace_uri[workspace_uri]
+    )
 
 
 def test_pyright_lsp_process_session_falls_back_when_stdin_not_writable(
@@ -360,6 +380,53 @@ def test_pyright_lsp_process_session_falls_back_when_stdin_not_writable(
 
     assert raw_by_uri is None
     assert fallback_reason == "Pyright LSP write timed out"
+
+
+def test_pyright_lsp_process_session_uses_nonblocking_fd_writes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    process = cast(
+        Any,
+        FakeByteProcess(
+            [{"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}]
+        ),
+    )
+    process.stdin = FakeFdStdin()
+    blocking_calls: list[tuple[int, bool]] = []
+    written: bytearray = bytearray()
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright.os.get_blocking",
+        lambda fd: True,
+    )
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright.os.set_blocking",
+        lambda fd, blocking: blocking_calls.append((fd, blocking)),
+    )
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright.os.write",
+        lambda fd, data: written.extend(data) or len(data),
+    )
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright._stdin_ready",
+        lambda stdin, deadline: True,
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri == {}
+    assert fallback_reason is None
+    assert written
+    assert blocking_calls[0] == (99, False)
+    assert blocking_calls[-1] == (99, True)
 
 
 def test_pyright_lsp_process_session_closes_shadow_workspace_before_returning(

@@ -237,6 +237,7 @@ class PyrightLspProcessSession:
         self._open_workspace_uris: set[str] = set()
         self._open_document_uris_by_workspace_uri: dict[str, set[str]] = {}
         self._request_lock = threading.RLock()
+        self._last_cleanup_error: str | None = None
 
     def collect_diagnostics(
         self,
@@ -264,8 +265,8 @@ class PyrightLspProcessSession:
                         shadow_root_resolved,
                         deadline=deadline,
                     )
-                except Exception:
-                    self._pending_messages.clear()
+                except Exception as exc:
+                    self._last_cleanup_error = str(exc) or exc.__class__.__name__
 
     def _collect_diagnostics_unlocked(
         self,
@@ -417,12 +418,11 @@ class PyrightLspProcessSession:
         deadline: float | None = None,
     ) -> None:
         workspace_uri = lsp_uri_from_path(shadow_root)
-        document_uris = self._open_document_uris_by_workspace_uri.pop(
-            workspace_uri,
-            set(),
+        document_uris = sorted(
+            self._open_document_uris_by_workspace_uri.get(workspace_uri, set())
         )
         cleanup_errors: list[Exception] = []
-        for document_uri in sorted(document_uris):
+        for document_uri in document_uris:
             try:
                 self._send(
                     {
@@ -434,13 +434,28 @@ class PyrightLspProcessSession:
                 )
             except Exception as exc:
                 cleanup_errors.append(exc)
+            else:
+                open_document_uris = self._open_document_uris_by_workspace_uri.get(
+                    workspace_uri
+                )
+                if open_document_uris is not None:
+                    open_document_uris.discard(document_uri)
+                    if not open_document_uris:
+                        self._open_document_uris_by_workspace_uri.pop(
+                            workspace_uri,
+                            None,
+                        )
 
         if workspace_uri not in self._open_workspace_uris:
             if cleanup_errors:
                 raise cleanup_errors[0]
             return
 
-        self._open_workspace_uris.remove(workspace_uri)
+        if self._open_document_uris_by_workspace_uri.get(workspace_uri):
+            if cleanup_errors:
+                raise cleanup_errors[0]
+            return
+
         try:
             self._send(
                 {
@@ -462,9 +477,12 @@ class PyrightLspProcessSession:
             )
         except Exception as exc:
             cleanup_errors.append(exc)
+        else:
+            self._open_workspace_uris.remove(workspace_uri)
 
         if cleanup_errors:
             raise cleanup_errors[0]
+        self._last_cleanup_error = None
 
     def _next_request_id(self) -> int:
         request_id = self._next_id
@@ -602,17 +620,27 @@ def _write_stdin_message(
             flush()
         return
 
+    if not _stdin_ready(stdin, deadline):
+        raise TimeoutError("Pyright LSP write timed out")
+
+    was_blocking = os.get_blocking(fd)
+    if was_blocking:
+        os.set_blocking(fd, False)
     offset = 0
-    while offset < len(encoded):
-        if not _stdin_ready(stdin, deadline):
-            raise TimeoutError("Pyright LSP write timed out")
-        try:
-            written = os.write(fd, encoded[offset : offset + 4096])
-        except BlockingIOError:
-            continue
-        if written <= 0:
-            raise BrokenPipeError("pyright language server stdin closed")
-        offset += written
+    try:
+        while offset < len(encoded):
+            if not _stdin_ready(stdin, deadline):
+                raise TimeoutError("Pyright LSP write timed out")
+            try:
+                written = os.write(fd, encoded[offset : offset + 4096])
+            except BlockingIOError:
+                continue
+            if written <= 0:
+                raise BrokenPipeError("pyright language server stdin closed")
+            offset += written
+    finally:
+        if was_blocking:
+            os.set_blocking(fd, True)
 
 
 def _stream_fileno(stream: Any) -> int | None:
