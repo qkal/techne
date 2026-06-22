@@ -143,9 +143,9 @@ right process boundary for LSP because they close stdin and wait for process
 exit. The implementation should add a small long-running process launcher for
 LSP that reuses allowlisted command resolution, safe environment construction,
 workspace-owned executable rejection, argument-list execution, and timeout
-policy. It should expose only stdin/stdout/stderr streams needed by the protocol
-layer and should still record response-safe lifecycle metadata for execution
-evidence.
+policy. It should expose only binary stdin/stdout/stderr streams needed by the
+protocol layer so LSP `Content-Length` framing preserves CRLF and byte counts.
+It should still record response-safe lifecycle metadata for execution evidence.
 
 ## Validator Capability API
 

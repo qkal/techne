@@ -378,6 +378,34 @@ def test_start_long_running_command_uses_allowlist_and_safe_environment(
     assert "UV_NO_ENV_FILE" in env
 
 
+def test_start_long_running_command_preserves_lsp_frame_bytes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    executable = tool_dir / "pyright-langserver"
+    executable.write_text(
+        "#!/bin/sh\nprintf 'Content-Length: 2\\r\\n\\r\\n{}'\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    config = AgentQualityConfig(
+        command_paths=CommandConfig(pyright_langserver=str(executable))
+    )
+
+    process = start_long_running_command(
+        "pyright-langserver",
+        ["--stdio"],
+        cwd=workspace,
+        config=config,
+    )
+
+    assert process.process.stdout is not None
+    output = process.process.stdout.read()
+    assert process.process.wait(timeout=5) == 0
+    assert output == b"Content-Length: 2\r\n\r\n{}"
+
+
 def test_command_runner_uses_safe_argument_subprocess_and_records_previews(
     monkeypatch,
     tmp_path: Path,

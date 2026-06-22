@@ -38,7 +38,7 @@ class LongRunningCommand:
     command: str
     args: list[str]
     cwd: str
-    process: subprocess.Popen[str]
+    process: subprocess.Popen[bytes]
     started_at: float
 
 
@@ -179,9 +179,6 @@ def start_long_running_command(
             [executable, *args],
             cwd=str(cwd),
             env=safe_env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
