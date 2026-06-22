@@ -5,6 +5,7 @@ from json import JSONDecodeError
 from typing import Any, cast
 
 _HEADER_DELIMITER = b"\r\n\r\n"
+_MAX_HEADER_BYTES = 8192
 
 
 class LspProtocolError(RuntimeError):
@@ -29,7 +30,13 @@ class LspFramer:
         while True:
             header_end = self._buffer.find(_HEADER_DELIMITER)
             if header_end == -1:
+                if len(self._buffer) > _MAX_HEADER_BYTES:
+                    raise LspProtocolError(
+                        f"LSP header exceeds maximum {_MAX_HEADER_BYTES} bytes"
+                    )
                 return messages
+            if header_end > _MAX_HEADER_BYTES:
+                raise LspProtocolError(f"LSP header exceeds maximum {_MAX_HEADER_BYTES} bytes")
 
             content_length = _parse_content_length(bytes(self._buffer[:header_end]))
             if content_length > self._max_message_bytes:
@@ -70,7 +77,10 @@ def _parse_content_length(header_bytes: bytes) -> int:
             raise LspProtocolError("negative Content-Length")
         if not value.isdecimal():
             raise LspProtocolError("non-integer Content-Length")
-        content_length = int(value)
+        try:
+            content_length = int(value)
+        except ValueError as exc:
+            raise LspProtocolError("Content-Length is too large") from exc
 
     if content_length is None:
         raise LspProtocolError("missing Content-Length header")

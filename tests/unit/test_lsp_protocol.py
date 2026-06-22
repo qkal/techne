@@ -47,6 +47,20 @@ def test_lsp_framer_rejects_oversized_messages_before_waiting_for_body() -> None
         framer.feed(b"Content-Length: 6\r\n\r\n")
 
 
+def test_lsp_framer_rejects_oversized_headers_without_delimiter() -> None:
+    framer = LspFramer(max_message_bytes=1024)
+
+    with pytest.raises(LspProtocolError, match="header exceeds maximum"):
+        framer.feed(b"x" * 9000)
+
+
+def test_lsp_framer_wraps_excessively_large_content_length() -> None:
+    framer = LspFramer(max_message_bytes=1024)
+
+    with pytest.raises(LspProtocolError, match="Content-Length is too large"):
+        framer.feed(b"Content-Length: " + (b"9" * 5000) + b"\r\n\r\n")
+
+
 def test_lsp_framer_rejects_malformed_json() -> None:
     framer = LspFramer(max_message_bytes=1024)
 
