@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
 
-from agent_quality_mcp.models import Diagnostic, DiagnosticRange, DiagnosticSeverity
+from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.models import (
+    CommandExecutionRecord,
+    Diagnostic,
+    DiagnosticRange,
+    DiagnosticSeverity,
+)
+from agent_quality_mcp.validators import (
+    ValidatorCapability,
+    ValidatorRequest,
+    ValidatorResult,
+    ValidatorScope,
+)
+
+RawLspDiagnostics = dict[str, list[dict[str, object]]]
 
 
 def lsp_uri_from_path(path: Path) -> str:
@@ -173,3 +188,151 @@ def _string_or_default(value: Any, default: str) -> str:
     except (TypeError, UnicodeEncodeError):
         return default
     return text
+
+
+class PyrightLspSession(Protocol):
+    def collect_diagnostics(
+        self,
+        shadow_root: Path,
+        changed_files: list[Path],
+        scope: ValidatorScope,
+        timeout_seconds: float,
+    ) -> tuple[RawLspDiagnostics | None, str | None]:
+        """Collect Pyright LSP diagnostics for a shadow workspace."""
+        ...
+
+
+class PyrightLspManager(Protocol):
+    def session_for(self, real_workspace_root: Path) -> PyrightLspSession:
+        """Return the reusable Pyright LSP session for a real workspace root."""
+        ...
+
+
+class PyrightCliAdapter(Protocol):
+    def check(
+        self,
+        cwd: Path,
+        changed_files: list[Path],
+        mode: str,
+    ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
+        """Run the Pyright CLI fallback."""
+        ...
+
+
+class PyrightLspProvider:
+    """Validate Pyright diagnostics through a reusable LSP session with CLI fallback."""
+
+    def __init__(self, manager: PyrightLspManager, cli_adapter: PyrightCliAdapter) -> None:
+        self.manager = manager
+        self.cli_adapter = cli_adapter
+
+    def validate(self, request: ValidatorRequest) -> ValidatorResult:
+        started_at = time.perf_counter()
+        scope = request.requested_scope
+        documents_opened = _changed_python_documents(request.changed_files)
+        session = self.manager.session_for(request.real_workspace_root)
+
+        try:
+            raw_by_uri, fallback_reason = session.collect_diagnostics(
+                request.shadow_workspace_root,
+                request.changed_files,
+                scope,
+                request.timeout_budget_seconds,
+            )
+
+            if raw_by_uri is not None and fallback_reason is None:
+                diagnostics = _normalize_lsp_diagnostics_by_uri(
+                    raw_by_uri,
+                    request.shadow_workspace_root,
+                )
+                return ValidatorResult(
+                    provider="pyright",
+                    capabilities=[
+                        ValidatorCapability.TYPE_DIAGNOSTICS,
+                        ValidatorCapability.LSP_REUSE,
+                        _scope_capability(scope),
+                    ],
+                    diagnostics=diagnostics,
+                    metadata={
+                        "lsp_reused": True,
+                        "fallback_to_cli": False,
+                        "diagnostic_scope": scope.value,
+                        "documents_opened": documents_opened,
+                        "diagnostics_completed": True,
+                    },
+                    duration_ms=_duration_ms(started_at),
+                )
+
+            reason = fallback_reason or "pyright LSP diagnostics unavailable"
+            cli_diagnostics, records = self.cli_adapter.check(
+                request.shadow_workspace_root,
+                request.changed_files,
+                request.mode.value,
+            )
+            fallback_diagnostic = diagnostic_from_message(
+                source="pyright",
+                code="lsp_fallback",
+                message=f"Pyright LSP unavailable; falling back to CLI: {reason}",
+                severity=DiagnosticSeverity.WARNING,
+                is_blocking=False,
+                metadata={"fallback_reason": reason},
+            )
+            return ValidatorResult(
+                provider="pyright",
+                capabilities=[
+                    ValidatorCapability.TYPE_DIAGNOSTICS,
+                    ValidatorCapability.CLI_FALLBACK,
+                ],
+                diagnostics=[fallback_diagnostic, *cli_diagnostics],
+                commands=records,
+                metadata={
+                    "lsp_reused": False,
+                    "fallback_to_cli": True,
+                    "fallback_reason": reason,
+                    "diagnostic_scope": scope.value,
+                    "documents_opened": documents_opened,
+                    "diagnostics_completed": True,
+                },
+                fallback_reason=reason,
+                duration_ms=_duration_ms(started_at),
+                timed_out=any(record.timed_out for record in records),
+                output_truncated=any(
+                    record.stdout_truncated or record.stderr_truncated for record in records
+                ),
+            )
+        finally:
+            _close_shadow_root(self.manager, request.shadow_workspace_root)
+
+
+def _normalize_lsp_diagnostics_by_uri(
+    raw_by_uri: RawLspDiagnostics,
+    shadow_root: Path,
+) -> list[Diagnostic]:
+    diagnostics: list[Diagnostic] = []
+    for uri, raw_diagnostics in raw_by_uri.items():
+        diagnostics.extend(normalize_lsp_diagnostics(uri, raw_diagnostics, shadow_root))
+    return diagnostics
+
+
+def _changed_python_documents(changed_files: list[Path]) -> list[str]:
+    return [
+        changed_file.as_posix()
+        for changed_file in changed_files
+        if changed_file.suffix == ".py"
+    ]
+
+
+def _scope_capability(scope: ValidatorScope) -> ValidatorCapability:
+    if scope is ValidatorScope.WORKSPACE:
+        return ValidatorCapability.WORKSPACE_SCOPE
+    return ValidatorCapability.CHANGED_FILE_SCOPE
+
+
+def _close_shadow_root(manager: PyrightLspManager, shadow_root: Path) -> None:
+    close_shadow_root = getattr(manager, "close_shadow_root", None)
+    if callable(close_shadow_root):
+        close_shadow_root(shadow_root)
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
