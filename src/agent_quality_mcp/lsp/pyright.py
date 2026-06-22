@@ -20,6 +20,8 @@ def lsp_uri_from_path(path: Path) -> str:
 def path_from_lsp_uri(uri: str) -> Path:
     """Return a resolved local path from a ``file://`` LSP document URI."""
 
+    if not isinstance(uri, str):
+        raise ValueError("LSP URI must be a string")
     parsed = urlparse(uri)
     if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"} or not parsed.path:
         raise ValueError("LSP URI must be a local file URI")
@@ -107,7 +109,7 @@ def _lsp_diagnostic_id(
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
-    return f"pyright-{code}-{digest}"
+    return f"pyright-lsp-{digest}"
 
 
 def _lsp_severity(raw_severity: Any) -> tuple[DiagnosticSeverity, bool]:
@@ -164,5 +166,10 @@ def _string_or_default(value: Any, default: str) -> str:
         return default
     text = str(value)
     if not text:
+        return default
+    try:
+        text.encode("utf-8")
+        json.dumps(text, ensure_ascii=False).encode("utf-8")
+    except (TypeError, UnicodeEncodeError):
         return default
     return text

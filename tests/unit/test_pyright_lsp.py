@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from agent_quality_mcp.lsp.pyright import (
     lsp_uri_from_path,
@@ -125,3 +126,41 @@ def test_normalize_lsp_diagnostics_omits_reversed_ranges(tmp_path: Path) -> None
     )
 
     assert diagnostics[0].range is None
+
+
+def test_normalize_lsp_diagnostics_rejects_non_string_uri(tmp_path: Path) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+
+    assert (
+        normalize_lsp_diagnostics(cast(Any, 123), [{"message": "ignored"}], shadow_root)
+        == []
+    )
+
+
+def test_normalize_lsp_diagnostics_sanitizes_unserializable_text(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    file_path = shadow_root / "module.py"
+    shadow_root.mkdir()
+    file_path.write_text("print(missing)\n", encoding="utf-8")
+
+    diagnostics = normalize_lsp_diagnostics(
+        lsp_uri_from_path(file_path),
+        [
+            {
+                "code": "\ud800",
+                "message": "\ud800",
+                "severity": 1,
+            }
+        ],
+        shadow_root,
+    )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.code == "pyright_lsp"
+    assert diagnostic.message == "Pyright diagnostic"
+    assert diagnostic.id.startswith("pyright-lsp-")
+    diagnostic.model_dump_json()
