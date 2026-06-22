@@ -7,11 +7,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from agent_quality_mcp.models import (
-    InspectWorkspaceRequest,
-    ValidatePatchRequest,
-    build_error_response,
-)
+from agent_quality_mcp.models import InspectWorkspaceRequest, ValidatePatchRequest
+from agent_quality_mcp.response import build_error_response
 from agent_quality_mcp.service import inspect_workspace_service, validate_patch_service
 
 
@@ -41,10 +38,10 @@ def validate_patch_tool(
         request = ValidatePatchRequest(**request_data)
     except ValidationError:
         return build_error_response(
-            request_id=request_id or str(uuid4()),
-            workspace_root=workspace_root,
-            mode=mode,
-            safety_mode=safety_mode,
+            request_id=_safe_request_id(request_id),
+            workspace_root=_safe_workspace_root(workspace_root),
+            mode=_safe_optional_string(mode),
+            safety_mode=_safe_optional_string(safety_mode),
             code="invalid_request",
             message="Invalid validate_patch request",
         ).model_dump(mode="json")
@@ -72,3 +69,21 @@ def register_tools(app: Any) -> None:
 
     app.tool(name="validate_patch")(validate_patch_tool)
     app.tool(name="inspect_workspace")(inspect_workspace_tool)
+
+
+def _safe_request_id(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return str(uuid4())
+
+
+def _safe_workspace_root(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return "<invalid>"
+
+
+def _safe_optional_string(value: object) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    return None

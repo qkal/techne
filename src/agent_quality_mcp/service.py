@@ -22,6 +22,7 @@ from agent_quality_mcp.exceptions import (
     CommandExecutionError,
     ConfigurationError,
     PatchApplyError,
+    ResourceLimitError,
     SecurityError,
     ToolUnavailableError,
     WorkspaceError,
@@ -42,14 +43,13 @@ from agent_quality_mcp.models import (
     SafeFixPreview,
     SafetyMode,
     ValidatePatchRequest,
-    ValidatePatchResponse,
     ValidationMode,
 )
 from agent_quality_mcp.patching import apply_unified_diff
 from agent_quality_mcp.paths import resolve_workspace_root, validate_changed_files
+from agent_quality_mcp.response import ValidatePatchResponse, build_validate_patch_response
 from agent_quality_mcp.risk import compute_risk_score
 from agent_quality_mcp.shadow import create_shadow_workspace
-from agent_quality_mcp.suggestions import build_suggestions
 from agent_quality_mcp.validators import ValidatorRequest, ValidatorScope
 from agent_quality_mcp.workspace import inspect_workspace_files
 
@@ -178,19 +178,17 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
 
         _raise_if_timed_out(started_at, config)
         compressed, context_summary = compress_diagnostics(diagnostics, config)
-        status = _validation_status(compressed)
         risk_score = compute_risk_score(
-            compressed,
+            diagnostics,
             patch_bytes=patch_bytes,
             changed_file_count=len(changed_files),
-            missing_tools=_missing_tools(compressed),
+            missing_tools=_missing_tools(diagnostics),
         )
         return _response_from_parts(
             request=request,
             config=config,
             workspace_root=resolved_root_text,
-            status=status,
-            diagnostics=compressed,
+            diagnostics=diagnostics,
             safe_fixes=safe_fixes,
             risk_score=risk_score,
             context_summary=context_summary,
@@ -391,7 +389,20 @@ def _run_pyright_provider(
         scope=_validator_scope_for_tool("pyright", mode),
     )
     result = _build_pyright_provider(runner).validate(validator_request)
-    return result.diagnostics, result.commands
+    records = list(result.commands)
+    if not records and result.metadata.get("fallback_to_cli") is False:
+        records.append(_pyright_lsp_record(shadow_root, result.duration_ms))
+    return result.diagnostics, records
+
+
+def _pyright_lsp_record(shadow_root: Path, duration_ms: int) -> CommandExecutionRecord:
+    return CommandExecutionRecord(
+        command="pyright",
+        args=["pyright-langserver", "--stdio"],
+        cwd=str(shadow_root),
+        duration_ms=duration_ms,
+        exit_code=0,
+    )
 
 
 def _validator_scope_for_tool(tool: str, mode: str) -> ValidatorScope:
@@ -457,10 +468,10 @@ def _validate_request_limits(
 ) -> None:
     if len(changed_files) > config.max_changed_files:
         audit.resource_limit("changed_files exceeds configured max_changed_files")
-        raise WorkspaceError("changed_files exceeds configured max_changed_files")
+        raise ResourceLimitError("changed_files exceeds configured max_changed_files")
     if patch_bytes > config.max_patch_bytes:
         audit.resource_limit("patch_unified_diff exceeds configured max_patch_bytes")
-        raise PatchApplyError("patch_unified_diff exceeds configured max_patch_bytes")
+        raise ResourceLimitError("patch_unified_diff exceeds configured max_patch_bytes")
     audit.resource_limit(f"Changed file count accepted: {len(changed_files)}")
     audit.resource_limit(f"Patch size accepted: {patch_bytes} bytes")
     for relative_path in changed_files:
@@ -473,10 +484,7 @@ def _validate_request_limits(
                 f"changed file exceeds configured max_changed_file_bytes: "
                 f"{relative_path.as_posix()}"
             )
-            raise WorkspaceError(
-                f"changed file exceeds configured max_changed_file_bytes: "
-                f"{relative_path.as_posix()}"
-            )
+            raise ResourceLimitError("changed file exceeds configured max_changed_file_bytes")
 
 
 def _final_response(
@@ -514,8 +522,7 @@ def _final_response(
         request=request,
         config=config,
         workspace_root=workspace_root,
-        status=status,
-        diagnostics=compressed,
+        diagnostics=diagnostics,
         safe_fixes=safe_fixes,
         risk_score=risk_score,
         context_summary=context_summary,
@@ -534,7 +541,6 @@ def _response_from_parts(
     request: ValidatePatchRequest,
     config: AgentQualityConfig,
     workspace_root: str,
-    status: ResponseStatus,
     diagnostics: list[Diagnostic],
     safe_fixes: list[SafeFixPreview],
     risk_score: RiskScore,
@@ -547,60 +553,32 @@ def _response_from_parts(
     commands: list[CommandExecutionRecord],
     timed_out: bool,
 ) -> ValidatePatchResponse:
-    blocking_errors, warnings, info = _categorize_diagnostics(diagnostics)
-    return ValidatePatchResponse(
+    execution = ExecutionMetadata(
+        duration_ms=_duration_ms(started_at),
+        shadow_workspace_path=shadow_workspace_path,
+        shadow_workspace_preserved=shadow_workspace_preserved,
+        commands=commands,
+        tool_availability=_tool_availability(diagnostics),
+        timed_out=timed_out or any(record.timed_out for record in commands),
+        output_truncated=any(
+            record.stdout_truncated or record.stderr_truncated for record in commands
+        ),
+    )
+    return build_validate_patch_response(
         request_id=request.request_id,
-        status=status,
         workspace_root=workspace_root,
         mode=request.mode or config.default_mode,
         safety_mode=request.safety_mode or config.default_safety_mode,
+        diagnostics=diagnostics,
+        compressed_groups=context_summary.compressed_groups,
+        context_summary=context_summary,
+        risk_score=risk_score,
+        execution=execution,
+        audit=audit_summary,
+        safe_fixes=safe_fixes,
         real_workspace_modified=False,
         shadow_workspace_used=shadow_workspace_used,
-        blocking_errors=blocking_errors,
-        warnings=warnings,
-        info=info,
-        safe_fixes=safe_fixes,
-        suggested_actions=build_suggestions(diagnostics),
-        risk_score=risk_score,
-        execution=ExecutionMetadata(
-            duration_ms=_duration_ms(started_at),
-            shadow_workspace_path=shadow_workspace_path,
-            shadow_workspace_preserved=shadow_workspace_preserved,
-            commands=commands,
-            tool_availability=_tool_availability(diagnostics),
-            timed_out=timed_out or any(record.timed_out for record in commands),
-            output_truncated=any(
-                record.stdout_truncated or record.stderr_truncated for record in commands
-            ),
-        ),
-        audit=audit_summary,
-        context_summary=context_summary,
     )
-
-
-def _categorize_diagnostics(
-    diagnostics: list[Diagnostic],
-) -> tuple[list[Diagnostic], list[Diagnostic], list[Diagnostic]]:
-    blocking_errors: list[Diagnostic] = []
-    warnings: list[Diagnostic] = []
-    info: list[Diagnostic] = []
-    for diagnostic in diagnostics:
-        if diagnostic.is_blocking or diagnostic.severity == DiagnosticSeverity.BLOCKER:
-            blocking_errors.append(diagnostic)
-        elif diagnostic.severity == DiagnosticSeverity.INFO:
-            info.append(diagnostic)
-        else:
-            warnings.append(diagnostic)
-    return blocking_errors, warnings, info
-
-
-def _validation_status(diagnostics: list[Diagnostic]) -> ResponseStatus:
-    if any(
-        diagnostic.is_blocking or diagnostic.severity == DiagnosticSeverity.BLOCKER
-        for diagnostic in diagnostics
-    ):
-        return ResponseStatus.FAILED
-    return ResponseStatus.PASSED
 
 
 def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
@@ -610,6 +588,8 @@ def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
     if isinstance(exc, ConfigurationError):
         code = "configuration_error"
         message = "Configuration rejected"
+    elif isinstance(exc, ResourceLimitError):
+        code = "resource_limit"
     elif isinstance(exc, WorkspaceError):
         source = "workspace"
         code = "workspace_error"
@@ -650,6 +630,8 @@ def _sanitize_safe_fixes_for_response(
 def _record_error_decision(audit: AuditRecorder, exc: AgentQualityMcpError) -> None:
     if isinstance(exc, SecurityError):
         audit.permission(f"Security validation denied request: {exc}")
+    elif isinstance(exc, ResourceLimitError):
+        audit.resource_limit(f"Resource limit stopped request: {exc}")
     elif isinstance(exc, WorkspaceError):
         audit.resource_limit(f"Workspace validation stopped request: {exc}")
     elif isinstance(exc, PatchApplyError):

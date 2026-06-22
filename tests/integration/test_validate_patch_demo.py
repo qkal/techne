@@ -9,9 +9,9 @@ from agent_quality_mcp.models import (
     AgentQualityConfig,
     SafetyMode,
     ValidatePatchRequest,
-    ValidatePatchResponse,
     ValidationMode,
 )
+from agent_quality_mcp.response import ValidatePatchResponse
 from agent_quality_mcp.shadow import ShadowWorkspaceContext
 from agent_quality_mcp.shadow import create_shadow_workspace as real_create_shadow_workspace
 
@@ -51,21 +51,22 @@ def test_validate_patch_runs_demo_fixture_in_shadow_workspace(
 
     shadow_path_text = response.execution.shadow_workspace_path
     try:
-        assert response.real_workspace_modified is False
-        assert response.shadow_workspace_used is True
+        assert response.evidence.real_workspace_modified is False
+        assert response.evidence.shadow_workspace_used is True
         assert response.execution.shadow_workspace_preserved is True
+        assert response.decision in {
+            "apply_patch",
+            "revise_patch",
+            "fix_tooling",
+            "request_human_review",
+        }
         assert shadow_path_text is not None
         shadow_path = Path(shadow_path_text)
         shadow_app = (shadow_path / "demo_pkg" / "app.py").read_text(encoding="utf-8")
         assert "return 2" in shadow_app
         assert response.execution.duration_ms >= 0
-        assert response.risk_score.score >= 0
-        assert (
-            response.suggested_actions
-            or response.warnings
-            or response.info
-            or response.blocking_errors
-        )
+        assert response.evidence.risk_score.score >= 0
+        assert response.next_actions
         real_app = app_path.read_text(encoding="utf-8")
         assert real_app == original_app
         assert "return 1" in real_app
@@ -92,12 +93,17 @@ def _assert_tool_recorded_or_structured_unavailable(
     if any(command.command == tool for command in commands):
         return
 
-    diagnostics = [*response.blocking_errors, *response.warnings, *response.info]
-    assert any(
-        diagnostic.source == "system"
-        and diagnostic.code == "tool_unavailable"
-        and diagnostic.metadata.get("tool") == tool
-        for diagnostic in diagnostics
+    assert response.evidence.tool_availability.get(tool) is False or any(
+        str(blocker.kind) == "tooling"
+        and tool
+        in "\n".join(
+            [
+                blocker.title,
+                blocker.details,
+                blocker.first_evidence or "",
+            ]
+        ).lower()
+        for blocker in response.blockers
     ), f"{tool} produced neither a command record nor a structured unavailable diagnostic"
 
 
@@ -108,17 +114,15 @@ def _assert_pyright_evidence_or_structured_unavailable(
     if any(command.command == "pyright" for command in commands):
         return
 
-    diagnostics = [*response.blocking_errors, *response.warnings, *response.info]
-    if any(
-        diagnostic.source == "pyright"
-        and diagnostic.metadata.get("transport") == "lsp"
-        for diagnostic in diagnostics
-    ):
-        return
-
-    assert any(
-        diagnostic.source == "system"
-        and diagnostic.code == "tool_unavailable"
-        and diagnostic.metadata.get("tool") in {"pyright", "pyright-langserver"}
-        for diagnostic in diagnostics
+    assert response.evidence.tool_availability.get("pyright") is False or any(
+        str(blocker.kind) == "tooling"
+        and "pyright"
+        in "\n".join(
+            [
+                blocker.title,
+                blocker.details,
+                blocker.first_evidence or "",
+            ]
+        ).lower()
+        for blocker in response.blockers
     ), "Pyright produced neither diagnostic evidence nor structured unavailable diagnostics"
