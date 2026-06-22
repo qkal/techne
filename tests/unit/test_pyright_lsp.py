@@ -32,19 +32,24 @@ class FakePyrightLspSession:
         self,
         raw_diagnostics: RawLspDiagnostics | None,
         fallback_reason: str | None = None,
+        exception: Exception | None = None,
     ) -> None:
         self.raw_diagnostics = raw_diagnostics
         self.fallback_reason = fallback_reason
+        self.exception = exception
         self.calls: list[tuple[Path, list[Path], ValidatorScope, float]] = []
         self.documents_opened: list[Path] = []
 
     def collect_diagnostics(
         self,
+        *,
         shadow_root: Path,
         changed_files: list[Path],
         scope: ValidatorScope,
         timeout_seconds: float,
     ) -> tuple[RawLspDiagnostics | None, str | None]:
+        if self.exception is not None:
+            raise self.exception
         self.calls.append((shadow_root, list(changed_files), scope, timeout_seconds))
         self.documents_opened = [
             shadow_root / changed_file
@@ -266,6 +271,24 @@ def test_pyright_lsp_provider_falls_back_when_workspace_scope_incomplete(
     assert result.fallback_reason == "workspace diagnostics incomplete"
     assert result.metadata["fallback_to_cli"] is True
     assert result.metadata["diagnostic_scope"] == "workspace"
+
+
+def test_pyright_lsp_provider_falls_back_when_lsp_raises(tmp_path: Path) -> None:
+    request = _provider_request(tmp_path, mode=ValidationMode.QUICK)
+    session = FakePyrightLspSession(None, exception=RuntimeError("initialize failed"))
+    manager = FakePyrightLspManager(session)
+    cli_record = _command_record(request.shadow_workspace_root)
+    cli_adapter = FakePyrightCliAdapter(records=[cli_record])
+
+    result = PyrightLspProvider(manager, cli_adapter).validate(request)
+
+    assert cli_adapter.calls == [
+        (request.shadow_workspace_root, [Path("pkg/app.py")], "quick")
+    ]
+    assert result.commands == [cli_record]
+    assert result.fallback_reason == "initialize failed"
+    assert result.metadata["fallback_to_cli"] is True
+    assert result.diagnostics[0].code == "lsp_fallback"
 
 
 def test_lsp_uri_round_trips_path(tmp_path: Path) -> None:

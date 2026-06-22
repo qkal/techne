@@ -193,6 +193,7 @@ def _string_or_default(value: Any, default: str) -> str:
 class PyrightLspSession(Protocol):
     def collect_diagnostics(
         self,
+        *,
         shadow_root: Path,
         changed_files: list[Path],
         scope: ValidatorScope,
@@ -230,78 +231,99 @@ class PyrightLspProvider:
         started_at = time.perf_counter()
         scope = request.requested_scope
         documents_opened = _changed_python_documents(request.changed_files)
-        session = self.manager.session_for(request.real_workspace_root)
 
         try:
+            session = self.manager.session_for(request.real_workspace_root)
             raw_by_uri, fallback_reason = session.collect_diagnostics(
-                request.shadow_workspace_root,
-                request.changed_files,
-                scope,
-                request.timeout_budget_seconds,
+                shadow_root=request.shadow_workspace_root,
+                changed_files=request.changed_files,
+                scope=scope,
+                timeout_seconds=request.timeout_budget_seconds,
             )
-
-            if raw_by_uri is not None and fallback_reason is None:
-                diagnostics = _normalize_lsp_diagnostics_by_uri(
-                    raw_by_uri,
-                    request.shadow_workspace_root,
-                )
-                return ValidatorResult(
-                    provider="pyright",
-                    capabilities=[
-                        ValidatorCapability.TYPE_DIAGNOSTICS,
-                        ValidatorCapability.LSP_REUSE,
-                        _scope_capability(scope),
-                    ],
-                    diagnostics=diagnostics,
-                    metadata={
-                        "lsp_reused": True,
-                        "fallback_to_cli": False,
-                        "diagnostic_scope": scope.value,
-                        "documents_opened": documents_opened,
-                        "diagnostics_completed": True,
-                    },
-                    duration_ms=_duration_ms(started_at),
-                )
-
-            reason = fallback_reason or "pyright LSP diagnostics unavailable"
-            cli_diagnostics, records = self.cli_adapter.check(
-                request.shadow_workspace_root,
-                request.changed_files,
-                request.mode.value,
+        except Exception as exc:
+            return self._fallback(
+                request=request,
+                reason=str(exc) or exc.__class__.__name__,
+                started_at=started_at,
+                documents_opened=documents_opened,
             )
-            fallback_diagnostic = diagnostic_from_message(
-                source="pyright",
-                code="lsp_fallback",
-                message=f"Pyright LSP unavailable; falling back to CLI: {reason}",
-                severity=DiagnosticSeverity.WARNING,
-                is_blocking=False,
-                metadata={"fallback_reason": reason},
+        finally:
+            _close_shadow_root(self.manager, request.shadow_workspace_root)
+
+        if raw_by_uri is not None and fallback_reason is None:
+            diagnostics = _normalize_lsp_diagnostics_by_uri(
+                raw_by_uri,
+                request.shadow_workspace_root,
             )
             return ValidatorResult(
                 provider="pyright",
                 capabilities=[
                     ValidatorCapability.TYPE_DIAGNOSTICS,
-                    ValidatorCapability.CLI_FALLBACK,
+                    ValidatorCapability.LSP_REUSE,
+                    _scope_capability(scope),
                 ],
-                diagnostics=[fallback_diagnostic, *cli_diagnostics],
-                commands=records,
+                diagnostics=diagnostics,
                 metadata={
-                    "lsp_reused": False,
-                    "fallback_to_cli": True,
-                    "fallback_reason": reason,
+                    "lsp_reused": True,
+                    "fallback_to_cli": False,
                     "diagnostic_scope": scope.value,
                     "documents_opened": documents_opened,
                     "diagnostics_completed": True,
                 },
-                fallback_reason=reason,
                 duration_ms=_duration_ms(started_at),
-                timed_out=any(record.timed_out for record in records),
-                output_truncated=any(
-                    record.stdout_truncated or record.stderr_truncated for record in records
-                ),
             )
-        finally:
-            _close_shadow_root(self.manager, request.shadow_workspace_root)
+
+        return self._fallback(
+            request=request,
+            reason=fallback_reason or "pyright LSP diagnostics unavailable",
+            started_at=started_at,
+            documents_opened=documents_opened,
+        )
+
+    def _fallback(
+        self,
+        *,
+        request: ValidatorRequest,
+        reason: str,
+        started_at: float,
+        documents_opened: list[str],
+    ) -> ValidatorResult:
+        cli_diagnostics, records = self.cli_adapter.check(
+            request.shadow_workspace_root,
+            request.changed_files,
+            request.mode.value,
+        )
+        fallback_diagnostic = diagnostic_from_message(
+            source="pyright",
+            code="lsp_fallback",
+            message=f"Pyright LSP unavailable; falling back to CLI: {reason}",
+            severity=DiagnosticSeverity.WARNING,
+            is_blocking=False,
+            metadata={"fallback_reason": reason},
+        )
+        return ValidatorResult(
+            provider="pyright",
+            capabilities=[
+                ValidatorCapability.TYPE_DIAGNOSTICS,
+                ValidatorCapability.CLI_FALLBACK,
+            ],
+            diagnostics=[fallback_diagnostic, *cli_diagnostics],
+            commands=records,
+            metadata={
+                "lsp_reused": False,
+                "fallback_to_cli": True,
+                "fallback_reason": reason,
+                "diagnostic_scope": request.requested_scope.value,
+                "documents_opened": documents_opened,
+                "diagnostics_completed": True,
+            },
+            fallback_reason=reason,
+            duration_ms=_duration_ms(started_at),
+            timed_out=any(record.timed_out for record in records),
+            output_truncated=any(
+                record.stdout_truncated or record.stderr_truncated for record in records
+            ),
+        )
 
 
 def _normalize_lsp_diagnostics_by_uri(
