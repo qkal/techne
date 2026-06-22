@@ -429,6 +429,54 @@ def test_pyright_lsp_process_session_uses_nonblocking_fd_writes(
     assert blocking_calls[-1] == (99, True)
 
 
+def test_pyright_lsp_process_session_bounds_public_cleanup_writes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    process = cast(
+        Any,
+        FakeByteProcess(
+            [{"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}]
+        ),
+    )
+    process.stdin = FakeFdStdin()
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright.os.get_blocking",
+        lambda fd: True,
+    )
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright.os.set_blocking",
+        lambda fd, blocking: None,
+    )
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright.os.write",
+        lambda fd, data: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    seen_deadlines: list[float | None] = []
+
+    def fake_stdin_ready(stdin: Any, deadline: float | None) -> bool:
+        del stdin
+        seen_deadlines.append(deadline)
+        return deadline is not None and len(seen_deadlines) == 1
+
+    monkeypatch.setattr("agent_quality_mcp.lsp.pyright._stdin_ready", fake_stdin_ready)
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+    workspace_uri = lsp_uri_from_path(shadow_root)
+    cast(Any, session)._open_workspace_uris.add(workspace_uri)
+    cast(Any, session)._open_document_uris_by_workspace_uri[workspace_uri] = {
+        lsp_uri_from_path(changed_file)
+    }
+
+    session.close_shadow_root(shadow_root)
+
+    assert seen_deadlines
+    assert all(deadline is not None for deadline in seen_deadlines)
+
+
 def test_pyright_lsp_process_session_closes_shadow_workspace_before_returning(
     tmp_path: Path,
 ) -> None:

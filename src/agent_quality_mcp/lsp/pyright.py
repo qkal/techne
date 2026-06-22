@@ -29,6 +29,7 @@ from agent_quality_mcp.validators import (
 )
 
 RawLspDiagnostics = dict[str, list[dict[str, object]]]
+_SHADOW_CLEANUP_TIMEOUT_SECONDS = 1.0
 
 
 def lsp_uri_from_path(path: Path) -> str:
@@ -409,8 +410,12 @@ class PyrightLspProcessSession:
     def close_shadow_root(self, shadow_root: Path) -> None:
         """Remove a request-scoped shadow workspace from the Pyright session."""
 
+        deadline = time.perf_counter() + _SHADOW_CLEANUP_TIMEOUT_SECONDS
         with self._request_lock:
-            self._close_shadow_root_unlocked(shadow_root.resolve())
+            try:
+                self._close_shadow_root_unlocked(shadow_root.resolve(), deadline=deadline)
+            except Exception as exc:
+                self._last_cleanup_error = str(exc) or exc.__class__.__name__
 
     def _close_shadow_root_unlocked(
         self,
