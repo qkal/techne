@@ -60,8 +60,13 @@ class FakePyrightLspSession:
 
 
 class FakePyrightLspManager:
-    def __init__(self, session: FakePyrightLspSession) -> None:
+    def __init__(
+        self,
+        session: FakePyrightLspSession,
+        cleanup_exception: Exception | None = None,
+    ) -> None:
         self.session = session
+        self.cleanup_exception = cleanup_exception
         self.session_roots: list[Path] = []
         self.closed_shadow_roots: list[Path] = []
 
@@ -70,6 +75,8 @@ class FakePyrightLspManager:
         return self.session
 
     def close_shadow_root(self, shadow_root: Path) -> None:
+        if self.cleanup_exception is not None:
+            raise self.cleanup_exception
         self.closed_shadow_roots.append(shadow_root)
 
 
@@ -289,6 +296,25 @@ def test_pyright_lsp_provider_falls_back_when_lsp_raises(tmp_path: Path) -> None
     assert result.fallback_reason == "initialize failed"
     assert result.metadata["fallback_to_cli"] is True
     assert result.diagnostics[0].code == "lsp_fallback"
+
+
+def test_pyright_lsp_provider_cleanup_failure_does_not_mask_fallback(
+    tmp_path: Path,
+) -> None:
+    request = _provider_request(tmp_path, mode=ValidationMode.QUICK)
+    session = FakePyrightLspSession(None, exception=RuntimeError("initialize failed"))
+    manager = FakePyrightLspManager(
+        session,
+        cleanup_exception=RuntimeError("cleanup failed"),
+    )
+    cli_record = _command_record(request.shadow_workspace_root)
+    cli_adapter = FakePyrightCliAdapter(records=[cli_record])
+
+    result = PyrightLspProvider(manager, cli_adapter).validate(request)
+
+    assert result.commands == [cli_record]
+    assert result.fallback_reason == "initialize failed"
+    assert result.metadata["fallback_to_cli"] is True
 
 
 def test_lsp_uri_round_trips_path(tmp_path: Path) -> None:

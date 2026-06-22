@@ -353,7 +353,10 @@ def _scope_capability(scope: ValidatorScope) -> ValidatorCapability:
 def _close_shadow_root(manager: PyrightLspManager, shadow_root: Path) -> None:
     close_shadow_root = getattr(manager, "close_shadow_root", None)
     if callable(close_shadow_root):
-        close_shadow_root(shadow_root)
+        try:
+            close_shadow_root(shadow_root)
+        except Exception:
+            return
 
 
 def _duration_ms(started_at: float) -> int:
