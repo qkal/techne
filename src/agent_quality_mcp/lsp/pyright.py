@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import select
 import threading
 import time
@@ -248,16 +249,23 @@ class PyrightLspProcessSession:
         """Open changed Python files and wait for their Pyright diagnostics."""
 
         shadow_root_resolved = shadow_root.resolve()
+        deadline = time.perf_counter() + max(0.0, timeout_seconds)
         with self._request_lock:
             try:
                 return self._collect_diagnostics_unlocked(
                     shadow_root=shadow_root_resolved,
                     changed_files=changed_files,
                     scope=scope,
-                    timeout_seconds=timeout_seconds,
+                    deadline=deadline,
                 )
             finally:
-                self._close_shadow_root_unlocked(shadow_root_resolved)
+                try:
+                    self._close_shadow_root_unlocked(
+                        shadow_root_resolved,
+                        deadline=deadline,
+                    )
+                except Exception:
+                    self._pending_messages.clear()
 
     def _collect_diagnostics_unlocked(
         self,
@@ -265,14 +273,13 @@ class PyrightLspProcessSession:
         shadow_root: Path,
         changed_files: list[Path],
         scope: ValidatorScope,
-        timeout_seconds: float,
+        deadline: float,
     ) -> tuple[RawLspDiagnostics | None, str | None]:
-        deadline = time.perf_counter() + max(0.0, timeout_seconds)
         try:
             shadow_root_resolved = shadow_root
             if not self._initialized:
                 self._initialize(deadline)
-            self._open_shadow_workspace(shadow_root_resolved)
+            self._open_shadow_workspace(shadow_root_resolved, deadline)
 
             if scope is ValidatorScope.WORKSPACE:
                 return None, "workspace diagnostics incomplete"
@@ -286,7 +293,7 @@ class PyrightLspProcessSession:
                 return {}, None
 
             for document_path in expected_documents:
-                self._open_shadow_document(shadow_root_resolved, document_path)
+                self._open_shadow_document(shadow_root_resolved, document_path, deadline)
 
             raw_by_uri: RawLspDiagnostics = {}
             while time.perf_counter() < deadline:
@@ -342,14 +349,18 @@ class PyrightLspProcessSession:
                         }
                     },
                 },
-            }
+            },
+            deadline,
         )
         self._read_until_response(request_id, deadline, operation="initialize")
         self._reject_buffered_lsp_responses(operation="initialize")
-        self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        self._send(
+            {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+            deadline,
+        )
         self._initialized = True
 
-    def _open_shadow_workspace(self, shadow_root: Path) -> None:
+    def _open_shadow_workspace(self, shadow_root: Path, deadline: float) -> None:
         uri = lsp_uri_from_path(shadow_root)
         if uri in self._open_workspace_uris:
             return
@@ -364,11 +375,17 @@ class PyrightLspProcessSession:
                         "removed": [],
                     }
                 },
-            }
+            },
+            deadline,
         )
         self._open_workspace_uris.add(uri)
 
-    def _open_shadow_document(self, shadow_root: Path, document_path: Path) -> None:
+    def _open_shadow_document(
+        self,
+        shadow_root: Path,
+        document_path: Path,
+        deadline: float,
+    ) -> None:
         workspace_uri = lsp_uri_from_path(shadow_root)
         uri = lsp_uri_from_path(document_path)
         self._send(
@@ -383,7 +400,8 @@ class PyrightLspProcessSession:
                         "text": document_path.read_text(encoding="utf-8"),
                     }
                 },
-            }
+            },
+            deadline,
         )
         self._open_document_uris_by_workspace_uri.setdefault(workspace_uri, set()).add(uri)
 
@@ -393,62 +411,73 @@ class PyrightLspProcessSession:
         with self._request_lock:
             self._close_shadow_root_unlocked(shadow_root.resolve())
 
-    def _close_shadow_root_unlocked(self, shadow_root: Path) -> None:
+    def _close_shadow_root_unlocked(
+        self,
+        shadow_root: Path,
+        deadline: float | None = None,
+    ) -> None:
         workspace_uri = lsp_uri_from_path(shadow_root)
         document_uris = self._open_document_uris_by_workspace_uri.pop(
             workspace_uri,
             set(),
         )
+        cleanup_errors: list[Exception] = []
         for document_uri in sorted(document_uris):
+            try:
+                self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didClose",
+                        "params": {"textDocument": {"uri": document_uri}},
+                    },
+                    deadline,
+                )
+            except Exception as exc:
+                cleanup_errors.append(exc)
+
+        if workspace_uri not in self._open_workspace_uris:
+            if cleanup_errors:
+                raise cleanup_errors[0]
+            return
+
+        self._open_workspace_uris.remove(workspace_uri)
+        try:
             self._send(
                 {
                     "jsonrpc": "2.0",
-                    "method": "textDocument/didClose",
-                    "params": {"textDocument": {"uri": document_uri}},
-                }
-            )
-
-        if workspace_uri not in self._open_workspace_uris:
-            return
-
-        self._send(
-            {
-                "jsonrpc": "2.0",
-                "method": "workspace/didChangeWorkspaceFolders",
-                "params": {
-                    "event": {
-                        "added": [],
-                        "removed": [
-                            {
-                                "uri": workspace_uri,
-                                "name": shadow_root.name,
-                            }
-                        ],
-                    }
+                    "method": "workspace/didChangeWorkspaceFolders",
+                    "params": {
+                        "event": {
+                            "added": [],
+                            "removed": [
+                                {
+                                    "uri": workspace_uri,
+                                    "name": shadow_root.name,
+                                }
+                            ],
+                        }
+                    },
                 },
-            }
-        )
-        self._open_workspace_uris.remove(workspace_uri)
+                deadline,
+            )
+        except Exception as exc:
+            cleanup_errors.append(exc)
+
+        if cleanup_errors:
+            raise cleanup_errors[0]
 
     def _next_request_id(self) -> int:
         request_id = self._next_id
         self._next_id += 1
         return request_id
 
-    def _send(self, message: dict[str, Any]) -> None:
+    def _send(self, message: dict[str, Any], deadline: float | None = None) -> None:
         stdin = getattr(self.process, "stdin", None)
         if stdin is None:
             raise RuntimeError("pyright language server stdin unavailable")
 
         encoded = build_lsp_message(message)
-        try:
-            stdin.write(encoded)
-        except TypeError:
-            stdin.write(encoded.decode("utf-8"))
-
-        flush = getattr(stdin, "flush", None)
-        if callable(flush):
-            flush()
+        _write_stdin_message(stdin, encoded, deadline)
 
     def _read_until_response(
         self,
@@ -554,6 +583,59 @@ def _publish_diagnostics_from_message(
 
 def _is_lsp_response_message(message: dict[str, Any]) -> bool:
     return "result" in message or "error" in message
+
+
+def _write_stdin_message(
+    stdin: Any,
+    encoded: bytes,
+    deadline: float | None,
+) -> None:
+    fd = _stream_fileno(stdin)
+    if fd is None:
+        try:
+            stdin.write(encoded)
+        except TypeError:
+            stdin.write(encoded.decode("utf-8"))
+
+        flush = getattr(stdin, "flush", None)
+        if callable(flush):
+            flush()
+        return
+
+    offset = 0
+    while offset < len(encoded):
+        if not _stdin_ready(stdin, deadline):
+            raise TimeoutError("Pyright LSP write timed out")
+        try:
+            written = os.write(fd, encoded[offset : offset + 4096])
+        except BlockingIOError:
+            continue
+        if written <= 0:
+            raise BrokenPipeError("pyright language server stdin closed")
+        offset += written
+
+
+def _stream_fileno(stream: Any) -> int | None:
+    try:
+        return int(stream.fileno())
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _stdin_ready(stdin: Any, deadline: float | None) -> bool:
+    if _stream_fileno(stdin) is None:
+        return True
+    if deadline is None:
+        return True
+
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        return False
+    try:
+        _, writable, _ = select.select([], [stdin], [], remaining)
+    except (OSError, ValueError):
+        return True
+    return bool(writable)
 
 
 def _read_stdout_chunk(stdout: Any, deadline: float) -> bytes | bytearray | str | None:

@@ -44,6 +44,31 @@ class FakeByteStdin:
         self.flushes += 1
 
 
+class FakeFailingStdin(FakeByteStdin):
+    def __init__(self, *, fail_after_writes: int) -> None:
+        super().__init__()
+        self.fail_after_writes = fail_after_writes
+        self.write_calls = 0
+
+    def write(self, data: bytes) -> int:
+        if self.write_calls >= self.fail_after_writes:
+            raise BrokenPipeError("cleanup write failed")
+        self.write_calls += 1
+        return super().write(data)
+
+
+class FakeBlockedStdin:
+    def fileno(self) -> int:
+        return 99
+
+    def write(self, data: bytes) -> int:
+        del data
+        raise AssertionError("write should not be attempted when stdin is not writable")
+
+    def flush(self) -> None:
+        raise AssertionError("flush should not be attempted when stdin is not writable")
+
+
 class FakeByteProcess:
     def __init__(self, messages: list[dict[str, Any]]) -> None:
         self.stdin = FakeByteStdin()
@@ -281,6 +306,60 @@ def test_pyright_lsp_process_session_serializes_collection(
     assert fallback_reason is None
     assert lock.entered == 1
     assert lock.exited == 1
+
+
+def test_pyright_lsp_process_session_cleanup_failure_does_not_mask_result(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    process = FakeByteProcess(
+        [{"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}]
+    )
+    process.stdin = FakeFailingStdin(fail_after_writes=4)
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "changed-file diagnostics incomplete"
+
+
+def test_pyright_lsp_process_session_falls_back_when_stdin_not_writable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    process = cast(
+        Any,
+        FakeByteProcess(
+            [{"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}]
+        ),
+    )
+    process.stdin = FakeBlockedStdin()
+    monkeypatch.setattr(
+        "agent_quality_mcp.lsp.pyright._stdin_ready",
+        lambda stdin, deadline: False,
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "Pyright LSP write timed out"
 
 
 def test_pyright_lsp_process_session_closes_shadow_workspace_before_returning(
