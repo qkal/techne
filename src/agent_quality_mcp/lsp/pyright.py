@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlparse
 
+from agent_quality_mcp.cli.runner import start_long_running_command
 from agent_quality_mcp.diagnostics import diagnostic_from_message
 from agent_quality_mcp.lsp.protocol import LspFramer, LspProtocolError, build_lsp_message
 from agent_quality_mcp.models import (
+    AgentQualityConfig,
     CommandExecutionRecord,
     Diagnostic,
     DiagnosticRange,
@@ -838,3 +840,41 @@ def _close_shadow_root(manager: PyrightLspManager, shadow_root: Path) -> None:
 
 def _duration_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
+class RealPyrightLspManager:
+    """Reusable Pyright LSP session manager keyed by real workspace."""
+
+    def __init__(self, *, config: AgentQualityConfig) -> None:
+        self.config = config
+        self._lock = threading.Lock()
+        self._sessions: dict[Path, PyrightLspProcessSession] = {}
+
+    def session_for(self, real_workspace_root: Path) -> PyrightLspProcessSession:
+        key = real_workspace_root.resolve()
+        with self._lock:
+            session = self._sessions.get(key)
+            if session is None:
+                session = _start_process_session(key, self.config)
+                self._sessions[key] = session
+            return session
+
+    def close_shadow_root(self, shadow_root: Path) -> None:
+        for session in list(self._sessions.values()):
+            session.close_shadow_root(shadow_root)
+
+
+def _start_process_session(
+    real_workspace_root: Path,
+    config: AgentQualityConfig,
+) -> PyrightLspProcessSession:
+    command = start_long_running_command(
+        "pyright-langserver",
+        ["--stdio"],
+        cwd=real_workspace_root,
+        config=config,
+    )
+    return PyrightLspProcessSession(
+        process=command.process,
+        max_message_bytes=config.max_output_bytes,
+    )

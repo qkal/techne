@@ -26,7 +26,7 @@ from agent_quality_mcp.exceptions import (
     ToolUnavailableError,
     WorkspaceError,
 )
-from agent_quality_mcp.lsp.pyright import PyrightLspProvider, PyrightLspSession
+from agent_quality_mcp.lsp.pyright import PyrightLspProvider, RealPyrightLspManager
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     AuditSummary,
@@ -53,22 +53,10 @@ from agent_quality_mcp.suggestions import build_suggestions
 from agent_quality_mcp.validators import ValidatorRequest, ValidatorScope
 from agent_quality_mcp.workspace import inspect_workspace_files
 
-SUPPORTED_TOOLS = ("uv", "ruff", "pyright")
+SUPPORTED_TOOLS = ("uv", "ruff", "pyright", "pyright-langserver")
 
 
-class _UnavailablePyrightLspSession:
-    def collect_diagnostics(self, **kwargs: object) -> tuple[None, str]:
-        del kwargs
-        return None, "pyright lsp manager not configured"
-
-
-class _UnavailablePyrightLspManager:
-    def session_for(self, real_workspace_root: Path) -> PyrightLspSession:
-        del real_workspace_root
-        return _UnavailablePyrightLspSession()
-
-
-_GLOBAL_PYRIGHT_LSP_MANAGER = _UnavailablePyrightLspManager()
+_PYRIGHT_LSP_MANAGERS: dict[int, RealPyrightLspManager] = {}
 
 
 def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchResponse:
@@ -440,9 +428,18 @@ def _build_validator_request(
 
 def _build_pyright_provider(runner: CommandRunner) -> PyrightLspProvider:
     return PyrightLspProvider(
-        manager=_GLOBAL_PYRIGHT_LSP_MANAGER,
+        manager=_pyright_lsp_manager(runner.config),
         cli_adapter=PyrightAdapter(runner),
     )
+
+
+def _pyright_lsp_manager(config: AgentQualityConfig) -> RealPyrightLspManager:
+    key = id(config)
+    manager = _PYRIGHT_LSP_MANAGERS.get(key)
+    if manager is None:
+        manager = RealPyrightLspManager(config=config)
+        _PYRIGHT_LSP_MANAGERS[key] = manager
+    return manager
 
 
 def _adapter_call(tool: str, call: Callable[[], tuple], fallback_empty: tuple) -> tuple:

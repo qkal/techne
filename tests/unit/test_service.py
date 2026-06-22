@@ -163,19 +163,21 @@ def test_validate_patch_uses_configured_defaults_for_omitted_mode_and_safety(
             captured["preview_safe_fixes"] = preview_safe_fixes
             return [], [], []
 
-    class CapturePyrightAdapter(CleanPyrightAdapter):
-        def check(
-            self,
-            cwd: Path,
-            changed_files: list[Path],
-            mode: str,
-        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
-            captured["pyright_mode"] = mode
-            return [], []
+    class CapturePyrightProvider:
+        def validate(self, request: ValidatorRequest) -> ValidatorResult:
+            captured["pyright_mode"] = request.mode.value
+            return ValidatorResult(
+                provider="pyright",
+                capabilities=[ValidatorCapability.TYPE_DIAGNOSTICS],
+            )
 
     monkeypatch.setattr(service_module, "UvAdapter", CaptureUvAdapter)
     monkeypatch.setattr(service_module, "RuffAdapter", CaptureRuffAdapter)
-    monkeypatch.setattr(service_module, "PyrightAdapter", CapturePyrightAdapter)
+    monkeypatch.setattr(
+        service_module,
+        "_build_pyright_provider",
+        lambda runner: CapturePyrightProvider(),
+    )
     monkeypatch.setattr(
         service_module,
         "load_config",
@@ -410,6 +412,7 @@ def test_validate_patch_preserves_tool_unavailable_diagnostics(
         "uv": False,
         "ruff": False,
         "pyright": False,
+        "pyright-langserver": True,
     }
 
 
@@ -562,8 +565,18 @@ def test_inspect_workspace_service_resolves_unavailable_commands_without_source(
     dumped = response.model_dump(mode="json")
     serialized = json.dumps(dumped, allow_nan=False)
 
-    assert response.command_availability == {"uv": False, "ruff": False, "pyright": False}
-    assert response.resolved_command_paths == {"uv": None, "ruff": None, "pyright": None}
+    assert response.command_availability == {
+        "uv": False,
+        "ruff": False,
+        "pyright": False,
+        "pyright-langserver": False,
+    }
+    assert response.resolved_command_paths == {
+        "uv": None,
+        "ruff": None,
+        "pyright": None,
+        "pyright-langserver": None,
+    }
     assert "value = 1" not in serialized
     assert "source_contents" not in serialized
 

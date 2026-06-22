@@ -9,6 +9,7 @@ from agent_quality_mcp.lsp.protocol import LspFramer, build_lsp_message
 from agent_quality_mcp.lsp.pyright import (
     PyrightLspProcessSession,
     PyrightLspProvider,
+    RealPyrightLspManager,
     lsp_uri_from_path,
     normalize_lsp_diagnostics,
     path_from_lsp_uri,
@@ -28,6 +29,10 @@ from agent_quality_mcp.validators import (
 )
 
 RawLspDiagnostics = dict[str, list[dict[str, object]]]
+
+
+class FakeSession:
+    pass
 
 
 class FakeByteStdin:
@@ -223,6 +228,54 @@ def _command_record(
 def _sent_lsp_messages(process: Any) -> list[dict[str, Any]]:
     framer = LspFramer(max_message_bytes=65536)
     return framer.feed(bytes(process.stdin.written))
+
+
+def test_real_pyright_lsp_manager_reuses_session_for_same_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started: list[Path] = []
+
+    def fake_start(real_workspace_root: Path, config: AgentQualityConfig) -> FakeSession:
+        del config
+        started.append(real_workspace_root)
+        return FakeSession()
+
+    monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
+    manager = RealPyrightLspManager(config=AgentQualityConfig())
+
+    first = manager.session_for(workspace)
+    second = manager.session_for(workspace)
+
+    assert first is second
+    assert started == [workspace.resolve()]
+
+
+def test_real_pyright_lsp_manager_separates_workspaces(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first_workspace = tmp_path / "one"
+    second_workspace = tmp_path / "two"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    started: list[Path] = []
+
+    def fake_start(real_workspace_root: Path, config: AgentQualityConfig) -> FakeSession:
+        del config
+        started.append(real_workspace_root)
+        return FakeSession()
+
+    monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
+    manager = RealPyrightLspManager(config=AgentQualityConfig())
+
+    first = manager.session_for(first_workspace)
+    second = manager.session_for(second_workspace)
+
+    assert first is not second
+    assert started == [first_workspace.resolve(), second_workspace.resolve()]
 
 
 def test_pyright_lsp_process_session_initializes_without_workspace_root(
