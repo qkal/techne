@@ -92,3 +92,36 @@ def test_normalize_lsp_diagnostics_rejects_relative_file_uri(
     )
 
     assert diagnostics == []
+
+
+def test_normalize_lsp_diagnostics_rejects_malformed_top_level(tmp_path: Path) -> None:
+    shadow_root = tmp_path / "shadow"
+    file_path = shadow_root / "module.py"
+    shadow_root.mkdir()
+    file_path.write_text("print(missing)\n", encoding="utf-8")
+
+    assert normalize_lsp_diagnostics(lsp_uri_from_path(file_path), None, shadow_root) == []
+
+
+def test_normalize_lsp_diagnostics_omits_reversed_ranges(tmp_path: Path) -> None:
+    shadow_root = tmp_path / "shadow"
+    file_path = shadow_root / "module.py"
+    shadow_root.mkdir()
+    file_path.write_text("print(missing)\n", encoding="utf-8")
+
+    diagnostics = normalize_lsp_diagnostics(
+        lsp_uri_from_path(file_path),
+        [
+            {
+                "range": {
+                    "start": {"line": 10, "character": 0},
+                    "end": {"line": 0, "character": 0},
+                },
+                "message": "Name is not defined",
+                "severity": 1,
+            }
+        ],
+        shadow_root,
+    )
+
+    assert diagnostics[0].range is None

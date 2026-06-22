@@ -33,7 +33,7 @@ def path_from_lsp_uri(uri: str) -> Path:
 
 def normalize_lsp_diagnostics(
     uri: str,
-    raw_diagnostics: list[Any],
+    raw_diagnostics: Any,
     shadow_root: Path,
 ) -> list[Diagnostic]:
     """Normalize Pyright LSP diagnostics for one shadow-workspace document."""
@@ -46,6 +46,9 @@ def normalize_lsp_diagnostics(
         return []
 
     diagnostics: list[Diagnostic] = []
+    if not isinstance(raw_diagnostics, list):
+        return diagnostics
+
     for item in raw_diagnostics:
         if not isinstance(item, dict):
             continue
@@ -138,6 +141,8 @@ def _lsp_range(raw_range: Any) -> DiagnosticRange | None:
         or end_line is None
         or end_column is None
     ):
+        return None
+    if (end_line, end_column) < (start_line, start_column):
         return None
 
     return DiagnosticRange(
