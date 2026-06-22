@@ -221,11 +221,23 @@ def test_pyright_lsp_process_session_initializes_without_workspace_root(
     assert fallback_reason is None
     sent_bytes = bytes(process.stdin.written)
     assert str(real_workspace_root).encode() not in sent_bytes
-    initialize = _sent_lsp_messages(process)[0]
+    sent_messages = _sent_lsp_messages(process)
+    initialize = sent_messages[0]
     assert initialize["method"] == "initialize"
     assert initialize["params"]["rootPath"] is None
     assert initialize["params"]["rootUri"] is None
     assert initialize["params"]["workspaceFolders"] == []
+    assert [message.get("method") for message in sent_messages[:4]] == [
+        "initialize",
+        "initialized",
+        "workspace/didChangeWorkspaceFolders",
+        "textDocument/didOpen",
+    ]
+    workspace_change = sent_messages[2]
+    assert workspace_change["params"]["event"]["added"] == [
+        {"uri": lsp_uri_from_path(shadow_root), "name": shadow_root.name}
+    ]
+    assert workspace_change["params"]["event"]["removed"] == []
 
 
 def test_pyright_lsp_process_session_opens_changed_python_files(

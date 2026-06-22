@@ -232,6 +232,7 @@ class PyrightLspProcessSession:
         self._initialized = False
         self._next_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
+        self._open_workspace_uris: set[str] = set()
 
     def collect_diagnostics(
         self,
@@ -248,6 +249,7 @@ class PyrightLspProcessSession:
             shadow_root_resolved = shadow_root.resolve()
             if not self._initialized:
                 self._initialize(deadline)
+            self._open_shadow_workspace(shadow_root_resolved)
 
             if scope is ValidatorScope.WORKSPACE:
                 return None, "workspace diagnostics incomplete"
@@ -329,6 +331,25 @@ class PyrightLspProcessSession:
         self._reject_buffered_lsp_responses(operation="initialize")
         self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
         self._initialized = True
+
+    def _open_shadow_workspace(self, shadow_root: Path) -> None:
+        uri = lsp_uri_from_path(shadow_root)
+        if uri in self._open_workspace_uris:
+            return
+
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "method": "workspace/didChangeWorkspaceFolders",
+                "params": {
+                    "event": {
+                        "added": [{"uri": uri, "name": shadow_root.name}],
+                        "removed": [],
+                    }
+                },
+            }
+        )
+        self._open_workspace_uris.add(uri)
 
     def _next_request_id(self) -> int:
         request_id = self._next_id
