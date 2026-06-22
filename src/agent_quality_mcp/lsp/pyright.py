@@ -25,7 +25,10 @@ def path_from_lsp_uri(uri: str) -> Path:
         raise ValueError("LSP URI must be a local file URI")
     if parsed.query or parsed.fragment:
         raise ValueError("LSP URI must not include query or fragment components")
-    return Path(unquote(parsed.path)).resolve()
+    path = Path(unquote(parsed.path))
+    if not path.is_absolute():
+        raise ValueError("LSP file URI path must be absolute")
+    return path.resolve()
 
 
 def normalize_lsp_diagnostics(

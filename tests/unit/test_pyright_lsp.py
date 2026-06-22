@@ -74,3 +74,21 @@ def test_normalize_lsp_diagnostics_rejects_uri_outside_shadow_root(tmp_path: Pat
     )
 
     assert diagnostics == []
+
+
+def test_normalize_lsp_diagnostics_rejects_relative_file_uri(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    (shadow_root / "module.py").write_text("print(missing)\n", encoding="utf-8")
+    monkeypatch.chdir(shadow_root)
+
+    diagnostics = normalize_lsp_diagnostics(
+        "file:module.py",
+        [{"message": "Name is not defined", "severity": 1}],
+        shadow_root,
+    )
+
+    assert diagnostics == []
