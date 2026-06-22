@@ -408,8 +408,6 @@ def _pyright_lsp_record(shadow_root: Path, duration_ms: int) -> CommandExecution
 def _validator_scope_for_tool(tool: str, mode: str) -> ValidatorScope:
     if tool == "pyright" and mode in {"standard", "strict"}:
         return ValidatorScope.WORKSPACE
-    if tool == "ruff" and mode == "strict":
-        return ValidatorScope.WORKSPACE
     return ValidatorScope.CHANGED_FILES
 
 

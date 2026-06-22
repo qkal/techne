@@ -80,7 +80,7 @@ def test_validate_patch_runs_demo_fixture_in_shadow_workspace(
 
         for tool in ("uv", "ruff"):
             _assert_tool_recorded_or_structured_unavailable(response, tool)
-        _assert_pyright_evidence_or_structured_unavailable(response)
+        _assert_tool_recorded_or_structured_unavailable(response, "pyright")
     finally:
         if shadow_path_text is not None:
             shutil.rmtree(Path(shadow_path_text).parent)
@@ -105,24 +105,3 @@ def _assert_tool_recorded_or_structured_unavailable(
         ).lower()
         for blocker in response.blockers
     ), f"{tool} produced neither a command record nor a structured unavailable diagnostic"
-
-
-def _assert_pyright_evidence_or_structured_unavailable(
-    response: ValidatePatchResponse,
-) -> None:
-    commands = response.execution.commands
-    if any(command.command == "pyright" for command in commands):
-        return
-
-    assert response.evidence.tool_availability.get("pyright") is False or any(
-        str(blocker.kind) == "tooling"
-        and "pyright"
-        in "\n".join(
-            [
-                blocker.title,
-                blocker.details,
-                blocker.first_evidence or "",
-            ]
-        ).lower()
-        for blocker in response.blockers
-    ), "Pyright produced neither diagnostic evidence nor structured unavailable diagnostics"

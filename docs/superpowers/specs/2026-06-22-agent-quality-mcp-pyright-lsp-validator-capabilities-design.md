@@ -92,17 +92,24 @@ The service remains the orchestrator. It resolves configuration, validates
 paths, creates the shadow workspace, applies patches, runs validators, sanitizes
 diagnostics, computes risk, and builds the public response.
 
-New internal modules:
+Internal modules:
 
 - `validators.py`: shared request/result/capability models and provider
   protocol.
 - `lsp/protocol.py`: minimal JSON-RPC framing, request IDs, response matching,
   notification parsing, and byte/time limits.
-- `lsp/manager.py`: reusable process lifecycle keyed by real workspace identity,
-  with startup, health checks, idle cleanup, crash detection, and restart.
-- `lsp/pyright.py`: Pyright-specific initialize, settings, workspace-folder
-  open/close, document open/close, diagnostic collection, fallback signaling,
-  and diagnostic normalization.
+- `lsp/pyright.py`: the consolidated Pyright LSP implementation, including
+  `PyrightLspProvider`, `PyrightLspManager`, `RealPyrightLspManager`,
+  process-session lifecycle, health checks, workspace-folder open/close,
+  document open/close, diagnostic collection, fallback signaling, and diagnostic
+  normalization.
+
+The implementation keeps generic byte framing separate in `lsp/protocol.py`,
+but intentionally avoids a separate `lsp/manager.py`. The Pyright manager,
+provider, and session code share Pyright-specific lifecycle assumptions, so
+keeping them together reduces cross-module coordination and keeps the first LSP
+implementation easier to audit. If a second language server is added, the
+shared seams can be extracted from the working Pyright implementation then.
 
 Existing adapters become provider implementations:
 
