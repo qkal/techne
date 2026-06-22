@@ -227,6 +227,7 @@ def test_pyright_lsp_process_session_initializes_without_workspace_root(
     assert initialize["params"]["rootPath"] is None
     assert initialize["params"]["rootUri"] is None
     assert initialize["params"]["workspaceFolders"] == []
+    assert initialize["params"]["capabilities"]["workspace"]["workspaceFolders"] is True
     assert [message.get("method") for message in sent_messages[:4]] == [
         "initialize",
         "initialized",

@@ -318,6 +318,12 @@ class PyrightLspProcessSession:
                     "rootUri": None,
                     "workspaceFolders": [],
                     "capabilities": {
+                        "workspace": {
+                            "workspaceFolders": True,
+                            "didChangeConfiguration": {
+                                "dynamicRegistration": False,
+                            },
+                        },
                         "textDocument": {
                             "publishDiagnostics": {
                                 "relatedInformation": True,
