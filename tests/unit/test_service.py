@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import agent_quality_mcp.lsp.pyright as pyright_lsp_module
 import agent_quality_mcp.service as service_module
 from agent_quality_mcp.diagnostics import diagnostic_from_message
-from agent_quality_mcp.exceptions import ConfigurationError
+from agent_quality_mcp.exceptions import ConfigurationError, ToolUnavailableError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
@@ -58,6 +59,22 @@ class CleanPyrightAdapter:
         mode: str,
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
         return [], []
+
+
+class CleanPyrightLspSession:
+    def collect_diagnostics(
+        self,
+        *,
+        shadow_root: Path,
+        changed_files: list[Path],
+        scope: Any,
+        timeout_seconds: float,
+    ) -> tuple[dict[str, list[dict[str, object]]], None]:
+        del shadow_root, changed_files, scope, timeout_seconds
+        return {}, None
+
+    def close_shadow_root(self, shadow_root: Path) -> None:
+        del shadow_root
 
 
 def _write_python_file(root: Path, relative_path: str = "pkg/app.py") -> Path:
@@ -520,6 +537,72 @@ def test_validate_patch_includes_pyright_lsp_fallback_warning(
 
     assert response.status == "passed"
     assert response.warnings[0].code == "lsp_fallback"
+
+
+def test_validate_patch_reuses_pyright_lsp_session_across_config_loads(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    _install_clean_adapters(monkeypatch)
+    started: list[Path] = []
+
+    def fake_start(
+        real_workspace_root: Path,
+        config: AgentQualityConfig,
+    ) -> CleanPyrightLspSession:
+        del config
+        started.append(real_workspace_root)
+        return CleanPyrightLspSession()
+
+    monkeypatch.setattr(pyright_lsp_module, "_start_process_session", fake_start)
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        mode=ValidationMode.QUICK,
+    )
+
+    first_response = validate_patch_service(request)
+    second_response = validate_patch_service(request)
+
+    assert first_response.status == "passed"
+    assert second_response.status == "passed"
+    assert started == [tmp_path.resolve()]
+
+
+def test_validate_patch_marks_pyright_langserver_unavailable_when_lsp_start_fails(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    _install_clean_adapters(monkeypatch)
+
+    def fake_start(
+        real_workspace_root: Path,
+        config: AgentQualityConfig,
+    ) -> CleanPyrightLspSession:
+        del real_workspace_root, config
+        raise ToolUnavailableError("Unable to resolve required tool: pyright-langserver")
+
+    monkeypatch.setattr(pyright_lsp_module, "_start_process_session", fake_start)
+    response = validate_patch_service(
+        ValidatePatchRequest(
+            workspace_root=str(tmp_path),
+            changed_files=["pkg/app.py"],
+            mode=ValidationMode.QUICK,
+        )
+    )
+
+    assert response.status == "passed"
+    assert response.execution.tool_availability["pyright"] is True
+    assert response.execution.tool_availability["pyright-langserver"] is False
+    assert any(warning.code == "lsp_fallback" for warning in response.warnings)
+    assert any(
+        warning.source == "system"
+        and warning.code == "tool_unavailable"
+        and warning.metadata.get("tool") == "pyright-langserver"
+        for warning in response.warnings
+    )
 
 
 def test_validate_patch_response_is_json_serializable(

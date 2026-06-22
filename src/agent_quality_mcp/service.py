@@ -56,7 +56,7 @@ from agent_quality_mcp.workspace import inspect_workspace_files
 SUPPORTED_TOOLS = ("uv", "ruff", "pyright", "pyright-langserver")
 
 
-_PYRIGHT_LSP_MANAGERS: dict[int, RealPyrightLspManager] = {}
+_PYRIGHT_LSP_MANAGER = RealPyrightLspManager()
 
 
 def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchResponse:
@@ -428,18 +428,9 @@ def _build_validator_request(
 
 def _build_pyright_provider(runner: CommandRunner) -> PyrightLspProvider:
     return PyrightLspProvider(
-        manager=_pyright_lsp_manager(runner.config),
+        manager=_PYRIGHT_LSP_MANAGER,
         cli_adapter=PyrightAdapter(runner),
     )
-
-
-def _pyright_lsp_manager(config: AgentQualityConfig) -> RealPyrightLspManager:
-    key = id(config)
-    manager = _PYRIGHT_LSP_MANAGERS.get(key)
-    if manager is None:
-        manager = RealPyrightLspManager(config=config)
-        _PYRIGHT_LSP_MANAGERS[key] = manager
-    return manager
 
 
 def _adapter_call(tool: str, call: Callable[[], tuple], fallback_empty: tuple) -> tuple:

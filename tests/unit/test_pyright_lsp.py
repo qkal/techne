@@ -152,7 +152,12 @@ class FakePyrightLspManager:
         self.session_roots: list[Path] = []
         self.closed_shadow_roots: list[Path] = []
 
-    def session_for(self, real_workspace_root: Path) -> FakePyrightLspSession:
+    def session_for(
+        self,
+        real_workspace_root: Path,
+        config: AgentQualityConfig,
+    ) -> FakePyrightLspSession:
+        del config
         self.session_roots.append(real_workspace_root)
         return self.session
 
@@ -244,10 +249,10 @@ def test_real_pyright_lsp_manager_reuses_session_for_same_workspace(
         return FakeSession()
 
     monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
-    manager = RealPyrightLspManager(config=AgentQualityConfig())
+    manager = RealPyrightLspManager()
 
-    first = manager.session_for(workspace)
-    second = manager.session_for(workspace)
+    first = manager.session_for(workspace, AgentQualityConfig())
+    second = manager.session_for(workspace, AgentQualityConfig())
 
     assert first is second
     assert started == [workspace.resolve()]
@@ -269,10 +274,10 @@ def test_real_pyright_lsp_manager_separates_workspaces(
         return FakeSession()
 
     monkeypatch.setattr("agent_quality_mcp.lsp.pyright._start_process_session", fake_start)
-    manager = RealPyrightLspManager(config=AgentQualityConfig())
+    manager = RealPyrightLspManager()
 
-    first = manager.session_for(first_workspace)
-    second = manager.session_for(second_workspace)
+    first = manager.session_for(first_workspace, AgentQualityConfig())
+    second = manager.session_for(second_workspace, AgentQualityConfig())
 
     assert first is not second
     assert started == [first_workspace.resolve(), second_workspace.resolve()]

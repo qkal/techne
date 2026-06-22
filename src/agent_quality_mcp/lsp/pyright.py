@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlparse
 
 from agent_quality_mcp.cli.runner import start_long_running_command
 from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.exceptions import CommandExecutionError
 from agent_quality_mcp.lsp.protocol import LspFramer, LspProtocolError, build_lsp_message
 from agent_quality_mcp.models import (
     AgentQualityConfig,
@@ -212,7 +213,11 @@ class PyrightLspSession(Protocol):
 
 
 class PyrightLspManager(Protocol):
-    def session_for(self, real_workspace_root: Path) -> PyrightLspSession:
+    def session_for(
+        self,
+        real_workspace_root: Path,
+        config: AgentQualityConfig,
+    ) -> PyrightLspSession:
         """Return the reusable Pyright LSP session for a real workspace root."""
         ...
 
@@ -712,12 +717,20 @@ class PyrightLspProvider:
         documents_opened = _changed_python_documents(request.changed_files)
 
         try:
-            session = self.manager.session_for(request.real_workspace_root)
+            session = self.manager.session_for(request.real_workspace_root, request.config)
             raw_by_uri, fallback_reason = session.collect_diagnostics(
                 shadow_root=request.shadow_workspace_root,
                 changed_files=request.changed_files,
                 scope=scope,
                 timeout_seconds=request.timeout_budget_seconds,
+            )
+        except CommandExecutionError as exc:
+            return self._fallback(
+                request=request,
+                reason=str(exc) or exc.__class__.__name__,
+                started_at=started_at,
+                documents_opened=documents_opened,
+                lsp_tool_unavailable=True,
             )
         except Exception as exc:
             return self._fallback(
@@ -766,6 +779,7 @@ class PyrightLspProvider:
         reason: str,
         started_at: float,
         documents_opened: list[str],
+        lsp_tool_unavailable: bool = False,
     ) -> ValidatorResult:
         cli_diagnostics, records = self.cli_adapter.check(
             request.shadow_workspace_root,
@@ -780,13 +794,16 @@ class PyrightLspProvider:
             is_blocking=False,
             metadata={"fallback_reason": reason},
         )
+        diagnostics = [fallback_diagnostic, *cli_diagnostics]
+        if lsp_tool_unavailable:
+            diagnostics.insert(1, _pyright_langserver_unavailable(reason))
         return ValidatorResult(
             provider="pyright",
             capabilities=[
                 ValidatorCapability.TYPE_DIAGNOSTICS,
                 ValidatorCapability.CLI_FALLBACK,
             ],
-            diagnostics=[fallback_diagnostic, *cli_diagnostics],
+            diagnostics=diagnostics,
             commands=records,
             metadata={
                 "lsp_reused": False,
@@ -838,6 +855,17 @@ def _close_shadow_root(manager: PyrightLspManager, shadow_root: Path) -> None:
             return
 
 
+def _pyright_langserver_unavailable(reason: str) -> Diagnostic:
+    return diagnostic_from_message(
+        source="system",
+        code="tool_unavailable",
+        message=f"Pyright language server unavailable: {reason}",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        metadata={"tool": "pyright-langserver"},
+    )
+
+
 def _duration_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
@@ -845,17 +873,20 @@ def _duration_ms(started_at: float) -> int:
 class RealPyrightLspManager:
     """Reusable Pyright LSP session manager keyed by real workspace."""
 
-    def __init__(self, *, config: AgentQualityConfig) -> None:
-        self.config = config
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._sessions: dict[Path, PyrightLspProcessSession] = {}
 
-    def session_for(self, real_workspace_root: Path) -> PyrightLspProcessSession:
+    def session_for(
+        self,
+        real_workspace_root: Path,
+        config: AgentQualityConfig,
+    ) -> PyrightLspProcessSession:
         key = real_workspace_root.resolve()
         with self._lock:
             session = self._sessions.get(key)
             if session is None:
-                session = _start_process_session(key, self.config)
+                session = _start_process_session(key, config)
                 self._sessions[key] = session
             return session
 
