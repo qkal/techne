@@ -781,11 +781,6 @@ class PyrightLspProvider:
         documents_opened: list[str],
         lsp_tool_unavailable: bool = False,
     ) -> ValidatorResult:
-        cli_diagnostics, records = self.cli_adapter.check(
-            request.shadow_workspace_root,
-            request.changed_files,
-            request.mode.value,
-        )
         fallback_diagnostic = diagnostic_from_message(
             source="pyright",
             code="lsp_fallback",
@@ -794,9 +789,20 @@ class PyrightLspProvider:
             is_blocking=False,
             metadata={"fallback_reason": reason},
         )
-        diagnostics = [fallback_diagnostic, *cli_diagnostics]
+        diagnostics = [fallback_diagnostic]
         if lsp_tool_unavailable:
             diagnostics.insert(1, _pyright_langserver_unavailable(reason))
+        records: list[CommandExecutionRecord] = []
+        try:
+            cli_diagnostics, records = self.cli_adapter.check(
+                request.shadow_workspace_root,
+                request.changed_files,
+                request.mode.value,
+            )
+        except CommandExecutionError as exc:
+            diagnostics.append(_pyright_cli_unavailable(str(exc) or exc.__class__.__name__))
+        else:
+            diagnostics.extend(cli_diagnostics)
         return ValidatorResult(
             provider="pyright",
             capabilities=[
@@ -863,6 +869,17 @@ def _pyright_langserver_unavailable(reason: str) -> Diagnostic:
         severity=DiagnosticSeverity.WARNING,
         is_blocking=False,
         metadata={"tool": "pyright-langserver"},
+    )
+
+
+def _pyright_cli_unavailable(reason: str) -> Diagnostic:
+    return diagnostic_from_message(
+        source="system",
+        code="tool_unavailable",
+        message=reason,
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        metadata={"tool": "pyright"},
     )
 
 

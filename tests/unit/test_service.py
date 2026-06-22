@@ -605,6 +605,54 @@ def test_validate_patch_marks_pyright_langserver_unavailable_when_lsp_start_fail
     )
 
 
+def test_validate_patch_marks_both_pyright_tools_unavailable_when_lsp_and_cli_fail(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    monkeypatch.setattr(service_module, "UvAdapter", CleanUvAdapter)
+    monkeypatch.setattr(service_module, "RuffAdapter", CleanRuffAdapter)
+
+    class UnavailablePyrightAdapter:
+        def __init__(self, runner: Any) -> None:
+            del runner
+
+        def check(
+            self,
+            cwd: Path,
+            changed_files: list[Path],
+            mode: str,
+        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
+            del cwd, changed_files, mode
+            raise ToolUnavailableError("Unable to resolve required tool: pyright")
+
+    def fake_start(
+        real_workspace_root: Path,
+        config: AgentQualityConfig,
+    ) -> CleanPyrightLspSession:
+        del real_workspace_root, config
+        raise ToolUnavailableError("Unable to resolve required tool: pyright-langserver")
+
+    monkeypatch.setattr(service_module, "PyrightAdapter", UnavailablePyrightAdapter)
+    monkeypatch.setattr(pyright_lsp_module, "_start_process_session", fake_start)
+    response = validate_patch_service(
+        ValidatePatchRequest(
+            workspace_root=str(tmp_path),
+            changed_files=["pkg/app.py"],
+            mode=ValidationMode.QUICK,
+        )
+    )
+
+    assert response.status == "passed"
+    assert response.execution.tool_availability["pyright"] is False
+    assert response.execution.tool_availability["pyright-langserver"] is False
+    assert {
+        warning.metadata.get("tool")
+        for warning in response.warnings
+        if warning.source == "system" and warning.code == "tool_unavailable"
+    } == {"pyright", "pyright-langserver"}
+
+
 def test_validate_patch_response_is_json_serializable(
     tmp_path: Path,
     monkeypatch: Any,

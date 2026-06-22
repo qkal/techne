@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.exceptions import ToolUnavailableError
 from agent_quality_mcp.lsp.protocol import LspFramer, build_lsp_message
 from agent_quality_mcp.lsp.pyright import (
     PyrightLspProcessSession,
@@ -172,9 +173,11 @@ class FakePyrightCliAdapter:
         self,
         diagnostics: list[Diagnostic] | None = None,
         records: list[CommandExecutionRecord] | None = None,
+        exception: Exception | None = None,
     ) -> None:
         self.diagnostics = diagnostics or []
         self.records = records or []
+        self.exception = exception
         self.calls: list[tuple[Path, list[Path], str]] = []
 
     def check(
@@ -184,6 +187,8 @@ class FakePyrightCliAdapter:
         mode: str,
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
         self.calls.append((cwd, list(changed_files), mode))
+        if self.exception is not None:
+            raise self.exception
         return list(self.diagnostics), list(self.records)
 
 
@@ -1065,6 +1070,31 @@ def test_pyright_lsp_provider_falls_back_when_lsp_raises(tmp_path: Path) -> None
     assert result.fallback_reason == "initialize failed"
     assert result.metadata["fallback_to_cli"] is True
     assert result.diagnostics[0].code == "lsp_fallback"
+
+
+def test_pyright_lsp_provider_keeps_lsp_unavailable_when_cli_fallback_raises(
+    tmp_path: Path,
+) -> None:
+    request = _provider_request(tmp_path, mode=ValidationMode.QUICK)
+    session = FakePyrightLspSession(
+        None,
+        exception=ToolUnavailableError("Unable to resolve required tool: pyright-langserver"),
+    )
+    manager = FakePyrightLspManager(session)
+    cli_adapter = FakePyrightCliAdapter(
+        exception=ToolUnavailableError("Unable to resolve required tool: pyright")
+    )
+
+    result = PyrightLspProvider(manager, cli_adapter).validate(request)
+
+    assert result.commands == []
+    assert result.metadata["fallback_to_cli"] is True
+    assert result.diagnostics[0].code == "lsp_fallback"
+    assert [
+        diagnostic.metadata.get("tool")
+        for diagnostic in result.diagnostics
+        if diagnostic.source == "system" and diagnostic.code == "tool_unavailable"
+    ] == ["pyright-langserver", "pyright"]
 
 
 def test_pyright_lsp_provider_cleanup_failure_does_not_mask_fallback(
