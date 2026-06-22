@@ -342,6 +342,38 @@ def test_pyright_lsp_process_session_workspace_scope_is_incomplete(
     assert fallback_reason == "workspace diagnostics incomplete"
 
 
+def test_pyright_lsp_process_session_returns_incomplete_when_changed_file_missing_diagnostics(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    outside_file = tmp_path / "outside.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    outside_file.write_text("print('outside')\n", encoding="utf-8")
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": lsp_uri_from_path(outside_file), "diagnostics": []},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "changed-file diagnostics incomplete"
+
+
 def test_pyright_lsp_process_session_rejects_unexpected_response_id(
     tmp_path: Path,
 ) -> None:
