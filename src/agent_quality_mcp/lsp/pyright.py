@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import select
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlparse
 
 from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.lsp.protocol import LspFramer, LspProtocolError, build_lsp_message
 from agent_quality_mcp.models import (
     CommandExecutionRecord,
     Diagnostic,
@@ -218,6 +221,239 @@ class PyrightCliAdapter(Protocol):
     ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
         """Run the Pyright CLI fallback."""
         ...
+
+
+class PyrightLspProcessSession:
+    """Collect diagnostics from a running Pyright language server process."""
+
+    def __init__(self, *, process: object, max_message_bytes: int) -> None:
+        self.process = process
+        self._framer = LspFramer(max_message_bytes=max_message_bytes)
+        self._initialized = False
+        self._next_id = 1
+        self._pending_messages: deque[dict[str, Any]] = deque()
+
+    def collect_diagnostics(
+        self,
+        *,
+        shadow_root: Path,
+        changed_files: list[Path],
+        scope: ValidatorScope,
+        timeout_seconds: float,
+    ) -> tuple[RawLspDiagnostics | None, str | None]:
+        """Open changed Python files and wait for their Pyright diagnostics."""
+
+        deadline = time.perf_counter() + max(0.0, timeout_seconds)
+        try:
+            shadow_root_resolved = shadow_root.resolve()
+            if not self._initialized:
+                self._initialize(deadline)
+
+            if scope is ValidatorScope.WORKSPACE:
+                return None, "workspace diagnostics incomplete"
+
+            expected_documents = _changed_python_document_paths(
+                shadow_root_resolved,
+                changed_files,
+            )
+            expected_uris = {lsp_uri_from_path(path) for path in expected_documents}
+            if not expected_uris:
+                return {}, None
+
+            for document_path in expected_documents:
+                uri = lsp_uri_from_path(document_path)
+                self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didOpen",
+                        "params": {
+                            "textDocument": {
+                                "uri": uri,
+                                "languageId": "python",
+                                "version": 1,
+                                "text": document_path.read_text(encoding="utf-8"),
+                            }
+                        },
+                    }
+                )
+
+            raw_by_uri: RawLspDiagnostics = {}
+            while time.perf_counter() < deadline:
+                message = self._read_one_message(deadline)
+                if message is None:
+                    break
+
+                diagnostic_message = _publish_diagnostics_from_message(
+                    message,
+                    shadow_root_resolved,
+                )
+                if diagnostic_message is None:
+                    continue
+
+                uri, diagnostics = diagnostic_message
+                raw_by_uri[uri] = diagnostics
+                if expected_uris.issubset(raw_by_uri):
+                    return raw_by_uri, None
+
+            return None, "changed-file diagnostics incomplete"
+        except Exception as exc:
+            return None, str(exc) or exc.__class__.__name__
+
+    def _initialize(self, deadline: float) -> None:
+        request_id = self._next_request_id()
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "initialize",
+                "params": {
+                    "processId": None,
+                    "rootPath": None,
+                    "rootUri": None,
+                    "workspaceFolders": [],
+                    "capabilities": {
+                        "textDocument": {
+                            "publishDiagnostics": {
+                                "relatedInformation": True,
+                            }
+                        }
+                    },
+                },
+            }
+        )
+        self._read_until_response(request_id, deadline)
+        self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        self._initialized = True
+
+    def _next_request_id(self) -> int:
+        request_id = self._next_id
+        self._next_id += 1
+        return request_id
+
+    def _send(self, message: dict[str, Any]) -> None:
+        stdin = getattr(self.process, "stdin", None)
+        if stdin is None:
+            raise RuntimeError("pyright language server stdin unavailable")
+
+        encoded = build_lsp_message(message)
+        try:
+            stdin.write(encoded)
+        except TypeError:
+            stdin.write(encoded.decode("utf-8"))
+
+        flush = getattr(stdin, "flush", None)
+        if callable(flush):
+            flush()
+
+    def _read_until_response(self, request_id: int, deadline: float) -> dict[str, Any]:
+        while time.perf_counter() < deadline:
+            message = self._read_one_message(deadline)
+            if message is None:
+                break
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                raise LspProtocolError(f"LSP request {request_id} failed: {message['error']}")
+            return message
+        raise TimeoutError(f"LSP request {request_id} response incomplete")
+
+    def _read_one_message(self, deadline: float) -> dict[str, Any] | None:
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+
+        stdout = getattr(self.process, "stdout", None)
+        if stdout is None:
+            raise RuntimeError("pyright language server stdout unavailable")
+
+        while not self._pending_messages:
+            chunk = _read_stdout_chunk(stdout, deadline)
+            if not chunk:
+                return None
+
+            if isinstance(chunk, str):
+                data = chunk.encode("utf-8")
+            elif isinstance(chunk, bytes | bytearray):
+                data = bytes(chunk)
+            else:
+                raise TypeError("pyright language server stdout returned non-bytes data")
+
+            self._pending_messages.extend(self._framer.feed(data))
+
+        return self._pending_messages.popleft()
+
+
+def _changed_python_document_paths(
+    shadow_root: Path,
+    changed_files: list[Path],
+) -> list[Path]:
+    document_paths: list[Path] = []
+    for changed_file in changed_files:
+        if changed_file.suffix != ".py":
+            continue
+
+        candidate = changed_file if changed_file.is_absolute() else shadow_root / changed_file
+        try:
+            document_path = candidate.resolve()
+            document_path.relative_to(shadow_root)
+        except (OSError, ValueError):
+            continue
+        document_paths.append(document_path)
+    return document_paths
+
+
+def _publish_diagnostics_from_message(
+    message: dict[str, Any],
+    shadow_root: Path,
+) -> tuple[str, list[dict[str, object]]] | None:
+    if message.get("method") != "textDocument/publishDiagnostics":
+        return None
+
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return None
+
+    uri = params.get("uri")
+    if not isinstance(uri, str):
+        return None
+
+    try:
+        path_from_lsp_uri(uri).relative_to(shadow_root)
+    except (OSError, ValueError):
+        return None
+
+    raw_diagnostics = params.get("diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        return None
+    if not all(isinstance(item, dict) for item in raw_diagnostics):
+        return None
+
+    return uri, cast(list[dict[str, object]], raw_diagnostics)
+
+
+def _read_stdout_chunk(stdout: Any, deadline: float) -> bytes | bytearray | str | None:
+    if not _stdout_ready(stdout, deadline):
+        return None
+
+    read_one = getattr(stdout, "read1", None)
+    if callable(read_one):
+        return cast(bytes | bytearray | str, read_one(4096))
+    return cast(bytes | bytearray | str, stdout.read(4096))
+
+
+def _stdout_ready(stdout: Any, deadline: float) -> bool:
+    try:
+        stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        return True
+
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        return False
+    try:
+        readable, _, _ = select.select([stdout], [], [], remaining)
+    except (OSError, ValueError):
+        return True
+    return bool(readable)
 
 
 class PyrightLspProvider:

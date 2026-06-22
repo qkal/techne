@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
 from agent_quality_mcp.diagnostics import diagnostic_from_message
+from agent_quality_mcp.lsp.protocol import LspFramer, build_lsp_message
 from agent_quality_mcp.lsp.pyright import (
+    PyrightLspProcessSession,
     PyrightLspProvider,
     lsp_uri_from_path,
     normalize_lsp_diagnostics,
@@ -25,6 +28,26 @@ from agent_quality_mcp.validators import (
 )
 
 RawLspDiagnostics = dict[str, list[dict[str, object]]]
+
+
+class FakeByteStdin:
+    def __init__(self) -> None:
+        self.written = bytearray()
+        self.flushes = 0
+
+    def write(self, data: bytes) -> int:
+        assert isinstance(data, bytes)
+        self.written.extend(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+class FakeByteProcess:
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        self.stdin = FakeByteStdin()
+        self.stdout = BytesIO(b"".join(build_lsp_message(message) for message in messages))
 
 
 class FakePyrightLspSession:
@@ -141,6 +164,165 @@ def _command_record(
         stdout_truncated=stdout_truncated,
         stderr_truncated=stderr_truncated,
     )
+
+
+def _sent_lsp_messages(process: FakeByteProcess) -> list[dict[str, Any]]:
+    framer = LspFramer(max_message_bytes=65536)
+    return framer.feed(bytes(process.stdin.written))
+
+
+def test_pyright_lsp_process_session_initializes_without_workspace_root(
+    tmp_path: Path,
+) -> None:
+    real_workspace_root = tmp_path / "real-workspace"
+    real_workspace_root.mkdir()
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    uri = lsp_uri_from_path(changed_file)
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "diagnostics": []},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri == {uri: []}
+    assert fallback_reason is None
+    sent_bytes = bytes(process.stdin.written)
+    assert str(real_workspace_root).encode() not in sent_bytes
+    initialize = _sent_lsp_messages(process)[0]
+    assert initialize["method"] == "initialize"
+    assert initialize["params"]["rootPath"] is None
+    assert initialize["params"]["rootUri"] is None
+    assert initialize["params"]["workspaceFolders"] == []
+
+
+def test_pyright_lsp_process_session_opens_changed_python_files(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    first_file = shadow_root / "pkg" / "app.py"
+    second_file = shadow_root / "pkg" / "other.py"
+    ignored_file = shadow_root / "README.md"
+    first_file.parent.mkdir(parents=True)
+    first_file.write_text("first = missing\n", encoding="utf-8")
+    second_file.write_text("second = 2\n", encoding="utf-8")
+    ignored_file.write_text("# ignored\n", encoding="utf-8")
+    first_uri = lsp_uri_from_path(first_file)
+    second_uri = lsp_uri_from_path(second_file)
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": first_uri, "diagnostics": []},
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": second_uri, "diagnostics": []},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py"), Path("README.md"), Path("pkg/other.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri == {first_uri: [], second_uri: []}
+    assert fallback_reason is None
+    did_open_messages = [
+        message
+        for message in _sent_lsp_messages(process)
+        if message.get("method") == "textDocument/didOpen"
+    ]
+    assert [message["params"]["textDocument"]["uri"] for message in did_open_messages] == [
+        first_uri,
+        second_uri,
+    ]
+    assert did_open_messages[0]["params"]["textDocument"]["languageId"] == "python"
+    assert did_open_messages[0]["params"]["textDocument"]["version"] == 1
+    assert did_open_messages[0]["params"]["textDocument"]["text"] == "first = missing\n"
+
+
+def test_pyright_lsp_process_session_returns_publish_diagnostics_by_uri(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print(missing)\n", encoding="utf-8")
+    uri = lsp_uri_from_path(changed_file)
+    diagnostic = {
+        "range": {
+            "start": {"line": 0, "character": 6},
+            "end": {"line": 0, "character": 13},
+        },
+        "severity": 1,
+        "code": "reportUndefinedVariable",
+        "message": "Name is not defined",
+    }
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "diagnostics": [diagnostic]},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri == {uri: [diagnostic]}
+    assert fallback_reason is None
+
+
+def test_pyright_lsp_process_session_workspace_scope_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    process = FakeByteProcess(
+        [{"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.WORKSPACE,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "workspace diagnostics incomplete"
 
 
 def test_pyright_lsp_provider_uses_lsp_for_changed_file_diagnostics(
