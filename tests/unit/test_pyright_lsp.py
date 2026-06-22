@@ -325,6 +325,59 @@ def test_pyright_lsp_process_session_workspace_scope_is_incomplete(
     assert fallback_reason == "workspace diagnostics incomplete"
 
 
+def test_pyright_lsp_process_session_rejects_unexpected_response_id(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    process = FakeByteProcess(
+        [{"jsonrpc": "2.0", "id": 99, "result": {"capabilities": {}}}]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "Unexpected Pyright LSP response id during initialize"
+
+
+def test_pyright_lsp_process_session_sanitizes_initialize_error_payload(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    process = FakeByteProcess(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32000, "message": "secret raw payload"},
+            }
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "Pyright LSP initialize returned an error"
+    assert "secret raw payload" not in fallback_reason
+
+
 def test_pyright_lsp_provider_uses_lsp_for_changed_file_diagnostics(
     tmp_path: Path,
 ) -> None:
