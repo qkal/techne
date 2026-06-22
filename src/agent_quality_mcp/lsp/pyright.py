@@ -306,6 +306,8 @@ class PyrightLspProcessSession:
                     continue
 
                 uri, diagnostics = diagnostic_message
+                if uri not in expected_uris:
+                    continue
                 raw_by_uri[uri] = diagnostics
                 if expected_uris.issubset(raw_by_uri):
                     return raw_by_uri, None

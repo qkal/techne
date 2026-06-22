@@ -456,6 +456,48 @@ def test_pyright_lsp_process_session_returns_publish_diagnostics_by_uri(
     assert fallback_reason is None
 
 
+def test_pyright_lsp_process_session_ignores_unchanged_shadow_file_diagnostics(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    unchanged_file = shadow_root / "pkg" / "unchanged.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('changed')\n", encoding="utf-8")
+    unchanged_file.write_text("print(missing)\n", encoding="utf-8")
+    changed_uri = lsp_uri_from_path(changed_file)
+    unchanged_uri = lsp_uri_from_path(unchanged_file)
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": unchanged_uri,
+                    "diagnostics": [{"message": "unrelated"}],
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": changed_uri, "diagnostics": []},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri == {changed_uri: []}
+    assert fallback_reason is None
+
+
 def test_pyright_lsp_process_session_workspace_scope_is_incomplete(
     tmp_path: Path,
 ) -> None:
