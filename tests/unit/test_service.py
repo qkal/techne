@@ -18,6 +18,11 @@ from agent_quality_mcp.models import (
     ValidationMode,
 )
 from agent_quality_mcp.service import inspect_workspace_service, validate_patch_service
+from agent_quality_mcp.validators import (
+    ValidatorCapability,
+    ValidatorRequest,
+    ValidatorResult,
+)
 
 
 class CleanUvAdapter:
@@ -371,18 +376,22 @@ def test_validate_patch_preserves_tool_unavailable_diagnostics(
         ) -> tuple[list[Diagnostic], list[CommandExecutionRecord], list[SafeFixPreview]]:
             return [_tool_unavailable("ruff")], [], []
 
-    class UnavailablePyrightAdapter(CleanPyrightAdapter):
-        def check(
-            self,
-            cwd: Path,
-            changed_files: list[Path],
-            mode: str,
-        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
-            return [_tool_unavailable("pyright")], []
+    class UnavailablePyrightProvider:
+        def validate(self, request: ValidatorRequest) -> ValidatorResult:
+            del request
+            return ValidatorResult(
+                provider="pyright",
+                capabilities=[ValidatorCapability.TYPE_DIAGNOSTICS],
+                diagnostics=[_tool_unavailable("pyright")],
+            )
 
     monkeypatch.setattr(service_module, "UvAdapter", UnavailableUvAdapter)
     monkeypatch.setattr(service_module, "RuffAdapter", UnavailableRuffAdapter)
-    monkeypatch.setattr(service_module, "PyrightAdapter", UnavailablePyrightAdapter)
+    monkeypatch.setattr(
+        service_module,
+        "_build_pyright_provider",
+        lambda runner: UnavailablePyrightProvider(),
+    )
     request = ValidatePatchRequest(
         workspace_root=str(tmp_path),
         changed_files=["pkg/app.py"],
@@ -402,6 +411,112 @@ def test_validate_patch_preserves_tool_unavailable_diagnostics(
         "ruff": False,
         "pyright": False,
     }
+
+
+def test_validate_patch_uses_pyright_lsp_provider_and_preserves_response_shape(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+    captured: dict[str, object] = {}
+
+    class StubPyrightProvider:
+        def validate(self, request: ValidatorRequest) -> ValidatorResult:
+            captured["real_workspace_root"] = request.real_workspace_root
+            captured["shadow_workspace_root"] = request.shadow_workspace_root
+            captured["mode"] = request.mode
+            captured["scope"] = request.requested_scope
+            return ValidatorResult(
+                provider="pyright",
+                capabilities=[ValidatorCapability.TYPE_DIAGNOSTICS],
+                diagnostics=[],
+                metadata={"fallback_to_cli": False},
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "_build_pyright_provider",
+        lambda runner: StubPyrightProvider(),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "UvAdapter",
+        lambda runner: CleanUvAdapter(runner),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "RuffAdapter",
+        lambda runner: CleanRuffAdapter(runner),
+    )
+
+    response = validate_patch_service(
+        ValidatePatchRequest(
+            workspace_root=str(tmp_path),
+            changed_files=["pkg/app.py"],
+            mode=ValidationMode.QUICK,
+        )
+    )
+
+    assert response.status == "passed"
+    assert response.real_workspace_modified is False
+    assert captured["real_workspace_root"] == tmp_path.resolve()
+    assert captured["shadow_workspace_root"] != tmp_path.resolve()
+    assert captured["mode"] == ValidationMode.QUICK
+
+
+def test_validate_patch_includes_pyright_lsp_fallback_warning(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    class StubPyrightProvider:
+        def validate(self, request: ValidatorRequest) -> ValidatorResult:
+            return ValidatorResult(
+                provider="pyright",
+                capabilities=[ValidatorCapability.CLI_FALLBACK],
+                diagnostics=[
+                    diagnostic_from_message(
+                        source="pyright",
+                        code="lsp_fallback",
+                        message=(
+                            "Pyright LSP unavailable; falling back to CLI: "
+                            "initialize failed"
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        is_blocking=False,
+                    )
+                ],
+                metadata={"fallback_to_cli": True},
+                fallback_reason="initialize failed",
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "_build_pyright_provider",
+        lambda runner: StubPyrightProvider(),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "UvAdapter",
+        lambda runner: CleanUvAdapter(runner),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "RuffAdapter",
+        lambda runner: CleanRuffAdapter(runner),
+    )
+
+    response = validate_patch_service(
+        ValidatePatchRequest(
+            workspace_root=str(tmp_path),
+            changed_files=["pkg/app.py"],
+            mode=ValidationMode.QUICK,
+        )
+    )
+
+    assert response.status == "passed"
+    assert response.warnings[0].code == "lsp_fallback"
 
 
 def test_validate_patch_response_is_json_serializable(

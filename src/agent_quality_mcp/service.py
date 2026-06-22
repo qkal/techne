@@ -26,6 +26,7 @@ from agent_quality_mcp.exceptions import (
     ToolUnavailableError,
     WorkspaceError,
 )
+from agent_quality_mcp.lsp.pyright import PyrightLspProvider, PyrightLspSession
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     AuditSummary,
@@ -42,15 +43,32 @@ from agent_quality_mcp.models import (
     SafetyMode,
     ValidatePatchRequest,
     ValidatePatchResponse,
+    ValidationMode,
 )
 from agent_quality_mcp.patching import apply_unified_diff
 from agent_quality_mcp.paths import resolve_workspace_root, validate_changed_files
 from agent_quality_mcp.risk import compute_risk_score
 from agent_quality_mcp.shadow import create_shadow_workspace
 from agent_quality_mcp.suggestions import build_suggestions
+from agent_quality_mcp.validators import ValidatorRequest, ValidatorScope
 from agent_quality_mcp.workspace import inspect_workspace_files
 
 SUPPORTED_TOOLS = ("uv", "ruff", "pyright")
+
+
+class _UnavailablePyrightLspSession:
+    def collect_diagnostics(self, **kwargs: object) -> tuple[None, str]:
+        del kwargs
+        return None, "pyright lsp manager not configured"
+
+
+class _UnavailablePyrightLspManager:
+    def session_for(self, real_workspace_root: Path) -> PyrightLspSession:
+        del real_workspace_root
+        return _UnavailablePyrightLspSession()
+
+
+_GLOBAL_PYRIGHT_LSP_MANAGER = _UnavailablePyrightLspManager()
 
 
 def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchResponse:
@@ -154,10 +172,13 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
 
             runner = CommandRunner(config)
             adapter_result = _run_adapters(
+                request=request,
                 runner=runner,
+                real_workspace_root=workspace_root,
                 shadow_root=shadow.path,
                 changed_files=changed_files,
                 mode=effective_mode.value,
+                safety_mode=effective_safety_mode,
                 preview_safe_fixes=effective_safety_mode == SafetyMode.PREVIEW_SAFE_FIXES,
                 timeout_check=lambda: _raise_if_timed_out(started_at, config),
             )
@@ -301,10 +322,13 @@ def _raise_if_timed_out(started_at: float, config: AgentQualityConfig) -> None:
 
 def _run_adapters(
     *,
+    request: ValidatePatchRequest,
     runner: CommandRunner,
+    real_workspace_root: Path,
     shadow_root: Path,
     changed_files: list[Path],
     mode: str,
+    safety_mode: SafetyMode,
     preview_safe_fixes: bool,
     timeout_check: Callable[[], None],
 ) -> _AdapterRunResult:
@@ -337,16 +361,88 @@ def _run_adapters(
     safe_fixes.extend(ruff_fixes)
 
     timeout_check()
-    pyright_diagnostics, pyright_records = _adapter_call(
+    pyright_result = _adapter_call(
         "pyright",
-        lambda: PyrightAdapter(runner).check(shadow_root, changed_files, mode),
+        lambda: _run_pyright_provider(
+            request=request,
+            runner=runner,
+            real_workspace_root=real_workspace_root,
+            shadow_root=shadow_root,
+            changed_files=changed_files,
+            mode=mode,
+            safety_mode=safety_mode,
+        ),
         fallback_empty=([],),
     )
+    pyright_diagnostics, pyright_records = pyright_result
     diagnostics.extend(pyright_diagnostics)
     commands.extend(pyright_records)
 
     timeout_check()
     return _AdapterRunResult(diagnostics=diagnostics, commands=commands, safe_fixes=safe_fixes)
+
+
+def _run_pyright_provider(
+    *,
+    request: ValidatePatchRequest,
+    runner: CommandRunner,
+    real_workspace_root: Path,
+    shadow_root: Path,
+    changed_files: list[Path],
+    mode: str,
+    safety_mode: SafetyMode,
+) -> tuple[list[Diagnostic], list[CommandExecutionRecord]]:
+    validator_request = _build_validator_request(
+        request=request,
+        real_workspace_root=real_workspace_root,
+        shadow_root=shadow_root,
+        changed_files=changed_files,
+        mode=mode,
+        safety_mode=safety_mode,
+        config=runner.config,
+        scope=_validator_scope_for_tool("pyright", mode),
+    )
+    result = _build_pyright_provider(runner).validate(validator_request)
+    return result.diagnostics, result.commands
+
+
+def _validator_scope_for_tool(tool: str, mode: str) -> ValidatorScope:
+    if tool == "pyright" and mode in {"standard", "strict"}:
+        return ValidatorScope.WORKSPACE
+    if tool == "ruff" and mode == "strict":
+        return ValidatorScope.WORKSPACE
+    return ValidatorScope.CHANGED_FILES
+
+
+def _build_validator_request(
+    *,
+    request: ValidatePatchRequest,
+    real_workspace_root: Path,
+    shadow_root: Path,
+    changed_files: list[Path],
+    mode: str,
+    safety_mode: SafetyMode,
+    config: AgentQualityConfig,
+    scope: ValidatorScope,
+) -> ValidatorRequest:
+    return ValidatorRequest(
+        real_workspace_root=real_workspace_root,
+        shadow_workspace_root=shadow_root,
+        changed_files=changed_files,
+        mode=ValidationMode(mode),
+        safety_mode=safety_mode,
+        requested_scope=scope,
+        timeout_budget_seconds=float(config.subprocess_timeout_seconds),
+        request_id=request.request_id,
+        config=config,
+    )
+
+
+def _build_pyright_provider(runner: CommandRunner) -> PyrightLspProvider:
+    return PyrightLspProvider(
+        manager=_GLOBAL_PYRIGHT_LSP_MANAGER,
+        cli_adapter=PyrightAdapter(runner),
+    )
 
 
 def _adapter_call(tool: str, call: Callable[[], tuple], fallback_empty: tuple) -> tuple:
