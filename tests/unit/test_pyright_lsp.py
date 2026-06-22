@@ -378,6 +378,38 @@ def test_pyright_lsp_process_session_sanitizes_initialize_error_payload(
     assert "secret raw payload" not in fallback_reason
 
 
+def test_pyright_lsp_process_session_rejects_duplicate_response_id_during_diagnostics(
+    tmp_path: Path,
+) -> None:
+    shadow_root = tmp_path / "shadow"
+    changed_file = shadow_root / "pkg" / "app.py"
+    changed_file.parent.mkdir(parents=True)
+    changed_file.write_text("print('ok')\n", encoding="utf-8")
+    uri = lsp_uri_from_path(changed_file)
+    process = FakeByteProcess(
+        [
+            {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            {"jsonrpc": "2.0", "id": 1, "result": {"duplicate": True}},
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "diagnostics": []},
+            },
+        ]
+    )
+    session = PyrightLspProcessSession(process=process, max_message_bytes=65536)
+
+    raw_by_uri, fallback_reason = session.collect_diagnostics(
+        shadow_root=shadow_root,
+        changed_files=[Path("pkg/app.py")],
+        scope=ValidatorScope.CHANGED_FILES,
+        timeout_seconds=1.0,
+    )
+
+    assert raw_by_uri is None
+    assert fallback_reason == "Unexpected Pyright LSP response id during diagnostics"
+
+
 def test_pyright_lsp_provider_uses_lsp_for_changed_file_diagnostics(
     tmp_path: Path,
 ) -> None:

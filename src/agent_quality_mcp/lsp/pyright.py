@@ -282,6 +282,10 @@ class PyrightLspProcessSession:
                 message = self._read_one_message(deadline)
                 if message is None:
                     break
+                if _is_lsp_response_message(message):
+                    raise LspProtocolError(
+                        "Unexpected Pyright LSP response id during diagnostics"
+                    )
 
                 diagnostic_message = _publish_diagnostics_from_message(
                     message,
@@ -356,9 +360,9 @@ class PyrightLspProcessSession:
             message = self._read_one_message(deadline)
             if message is None:
                 break
-            message_id = message.get("id")
-            if message_id is None:
+            if not _is_lsp_response_message(message):
                 continue
+            message_id = message.get("id")
             if message_id != request_id:
                 raise LspProtocolError(
                     f"Unexpected Pyright LSP response id during {operation}"
@@ -439,6 +443,10 @@ def _publish_diagnostics_from_message(
         return None
 
     return uri, cast(list[dict[str, object]], raw_diagnostics)
+
+
+def _is_lsp_response_message(message: dict[str, Any]) -> bool:
+    return "result" in message or "error" in message
 
 
 def _read_stdout_chunk(stdout: Any, deadline: float) -> bytes | bytearray | str | None:
