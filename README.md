@@ -22,8 +22,9 @@ the currently unsupported `apply_safe_fixes` safety mode.
   advanced patch headers are rejected.
 - `apply_safe_fixes` is rejected. `preview_safe_fixes` may return proposed fix
   previews without mutating the real repository.
-- Subprocesses are restricted to an allowlist of `uv`, `ruff`, and `pyright`.
-  Commands are invoked with argument lists and `shell=False`.
+- Subprocesses are restricted to an allowlist of `uv`, `ruff`, `pyright`, and
+  `pyright-langserver`. Commands are invoked with argument lists and
+  `shell=False`.
 - Executables are resolved from `PATH` or trusted server-side absolute paths
   outside the workspace. Workspace-owned executables are excluded from command
   resolution.
@@ -184,10 +185,19 @@ environment variables before starting the server:
 AGENT_QUALITY_MCP_UV=/opt/tools/uv
 AGENT_QUALITY_MCP_RUFF=/opt/tools/ruff
 AGENT_QUALITY_MCP_PYRIGHT=/opt/tools/pyright
+AGENT_QUALITY_MCP_PYRIGHT_LANGSERVER=/opt/tools/pyright-langserver
 ```
 
 Those paths are still validated by command resolution and must point to the
 expected allowlisted tool outside the target workspace.
+
+Pyright type diagnostics prefer a reusable `pyright-langserver --stdio`
+language-server path. The language server is keyed by the resolved real
+workspace for process reuse, but diagnostics are requested only against the
+shadow workspace created for each validation. If LSP initialization,
+diagnostic completion, workspace-scope coverage, or protocol parsing is
+unreliable, validation falls back to the existing Pyright CLI adapter and
+returns a non-blocking warning diagnostic.
 
 ## MVP Limitations
 
@@ -195,7 +205,8 @@ expected allowlisted tool outside the target workspace.
 - Stdio transport only.
 - Minimal uv, Ruff, and Pyright adapters.
 - No real-repository mutation.
-- No LSP integration.
+- Pyright LSP is diagnostics-only; completions, hover, code actions, import
+  organization, and generic multi-language LSP support are not included.
 - No advanced patch formats such as binary patches, renames, copies, or mode
   changes.
 - No production-grade safe-fix grouping.
