@@ -7,16 +7,17 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Protocol
 
+from agent_quality_mcp.cli.errors import tool_unavailable_diagnostic
+from agent_quality_mcp.cli.path_args import safe_python_path_args
 from agent_quality_mcp.cli.runner import CommandRunResult
 from agent_quality_mcp.diagnostics import diagnostic_from_message, normalize_pyright
-from agent_quality_mcp.exceptions import CommandExecutionError, SecurityError
+from agent_quality_mcp.exceptions import CommandExecutionError
 from agent_quality_mcp.models import (
     AgentQualityConfig,
     CommandExecutionRecord,
     Diagnostic,
     DiagnosticSeverity,
 )
-from agent_quality_mcp.paths import validate_changed_files
 
 
 class Runner(Protocol):
@@ -40,7 +41,7 @@ class PyrightAdapter:
         file_args: list[str] = []
         diagnostics: list[Diagnostic] = []
         if mode in {"quick", "standard"}:
-            file_args, diagnostics = _safe_path_args(cwd, changed_files)
+            file_args, diagnostics = safe_python_path_args(cwd, changed_files, source="pyright")
         records: list[CommandExecutionRecord] = []
         if mode in {"quick", "standard"} and changed_files and not file_args:
             return diagnostics, records
@@ -48,7 +49,7 @@ class PyrightAdapter:
         try:
             result = self.runner.run_with_output("pyright", ["--outputjson", *file_args], cwd)
         except CommandExecutionError as exc:
-            diagnostics.append(_tool_unavailable("pyright", exc))
+            diagnostics.append(tool_unavailable_diagnostic("pyright", exc))
             return diagnostics, records
         record = result.record
         records.append(record)
@@ -82,63 +83,6 @@ def _diagnostics_from_result(result: CommandRunResult) -> list[Diagnostic]:
     if not normalized and record.exit_code not in (0, None):
         diagnostics.append(_command_failed(record))
     return [*diagnostics, *normalized]
-
-
-def _safe_path_args(cwd: Path, changed_files: list[Path]) -> tuple[list[str], list[Diagnostic]]:
-    safe_args: list[str] = []
-    diagnostics: list[Diagnostic] = []
-    for path in changed_files:
-        path_arg = path.as_posix()
-        if _has_unsafe_path_syntax(path_arg) or _is_directory_target(cwd, path_arg):
-            diagnostics.append(_unsafe_path_diagnostic(path_arg))
-            continue
-        if Path(path_arg).suffix != ".py":
-            continue
-        if _is_safe_path_arg(cwd, path_arg):
-            safe_args.append(path_arg)
-            continue
-        diagnostics.append(_unsafe_path_diagnostic(path_arg))
-    return safe_args, diagnostics
-
-
-def _has_unsafe_path_syntax(path_arg: str) -> bool:
-    path = Path(path_arg)
-    return (
-        path.is_absolute()
-        or path_arg in {"", "."}
-        or path_arg.startswith("-")
-        or ".." in path.parts
-        or not all(character.isprintable() for character in path_arg)
-    )
-
-
-def _is_directory_target(cwd: Path, path_arg: str) -> bool:
-    return (cwd / Path(path_arg)).is_dir()
-
-
-def _is_safe_path_arg(cwd: Path, path_arg: str) -> bool:
-    path = Path(path_arg)
-    if _has_unsafe_path_syntax(path_arg):
-        return False
-    try:
-        validate_changed_files(cwd, [path_arg])
-    except (OSError, SecurityError):
-        return False
-    candidate = cwd / path
-    if candidate.is_symlink() or not candidate.is_file():
-        return False
-    return True
-
-
-def _unsafe_path_diagnostic(path_arg: str) -> Diagnostic:
-    return diagnostic_from_message(
-        source="pyright",
-        code="unsafe_path",
-        message="Skipped unsafe changed file path",
-        severity=DiagnosticSeverity.WARNING,
-        is_blocking=False,
-        file=path_arg,
-    )
 
 
 def _timeout_diagnostic(record: CommandExecutionRecord) -> list[Diagnostic]:
@@ -178,15 +122,4 @@ def _invalid_json(exc: JSONDecodeError | None) -> Diagnostic:
         message=message,
         severity=DiagnosticSeverity.WARNING,
         is_blocking=False,
-    )
-
-
-def _tool_unavailable(tool: str, exc: CommandExecutionError) -> Diagnostic:
-    return diagnostic_from_message(
-        source="system",
-        code="tool_unavailable",
-        message=str(exc),
-        severity=DiagnosticSeverity.WARNING,
-        is_blocking=False,
-        metadata={"tool": tool},
     )

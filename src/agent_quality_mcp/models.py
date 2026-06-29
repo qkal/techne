@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -227,17 +226,6 @@ class SafeFixPreview(AgentQualityBaseModel):
     requires_human_review: bool
 
 
-class SuggestedAction(AgentQualityBaseModel):
-    """Concrete next step derived from diagnostics."""
-
-    title: str
-    description: str
-    priority: int = Field(ge=1, le=5)
-    related_diagnostic_ids: list[str] = Field(default_factory=list)
-    command: list[str] | None = None
-    is_safe_to_run: bool = False
-
-
 class RiskScore(AgentQualityBaseModel):
     """Deterministic risk score."""
 
@@ -291,8 +279,3 @@ class InspectWorkspaceResponse(AgentQualityBaseModel):
     security_decisions: list[str]
     config_valid: bool = True
     config_issue: str | None = None
-
-
-def path_to_display(path: Path) -> str:
-    """Return a stable string form for paths in responses."""
-    return str(path)
