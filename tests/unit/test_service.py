@@ -1055,7 +1055,12 @@ def test_inspect_workspace_config_rejection_does_not_leak_raw_error(
 
     assert raw_value not in serialized
     assert "invalid config contains" not in serialized
-    assert "Configuration rejected; safe defaults used" in response.security_decisions
+    assert response.config_valid is False
+    assert response.config_issue == "Configuration rejected"
+    assert any(
+        decision.startswith("Configuration rejected; safe defaults used")
+        for decision in response.security_decisions
+    )
 
 
 def test_inspect_workspace_sanitizes_accepted_config_string_lists(

@@ -50,6 +50,7 @@ from agent_quality_mcp.paths import resolve_workspace_root, validate_changed_fil
 from agent_quality_mcp.response import ValidatePatchResponse, build_validate_patch_response
 from agent_quality_mcp.risk import compute_risk_score
 from agent_quality_mcp.shadow import create_shadow_workspace
+from agent_quality_mcp.tool_validation import sanitize_config_issue_message
 from agent_quality_mcp.validators import ValidatorRequest, ValidatorScope
 from agent_quality_mcp.workspace import inspect_workspace_files
 
@@ -259,11 +260,17 @@ def inspect_workspace_service(
         "Inspection returns metadata only and does not include source contents",
         "Command resolution excludes workspace-owned executables",
     ]
+    config_valid = True
+    config_issue: str | None = None
     try:
         config = load_config(root, config_overrides)
-    except ConfigurationError:
+    except ConfigurationError as exc:
         config = AgentQualityConfig()
-        security_decisions.append("Configuration rejected; safe defaults used")
+        config_valid = False
+        config_issue = sanitize_config_issue_message(str(exc))
+        security_decisions.append(
+            f"Configuration rejected; safe defaults used ({config_issue})"
+        )
     file_inspection = inspect_workspace_files(root, config)
     availability, resolved_paths, command_decisions = _inspect_command_availability(root, config)
     security_decisions.extend(command_decisions)
@@ -281,6 +288,8 @@ def inspect_workspace_service(
             "workspace_exclusions",
         ),
         security_decisions=security_decisions,
+        config_valid=config_valid,
+        config_issue=config_issue,
     )
 
 
@@ -585,7 +594,7 @@ def _exception_diagnostic(exc: AgentQualityMcpError) -> Diagnostic:
     message = str(exc)
     if isinstance(exc, ConfigurationError):
         code = "configuration_error"
-        message = "Configuration rejected"
+        message = sanitize_config_issue_message(str(exc))
     elif isinstance(exc, ResourceLimitError):
         code = "resource_limit"
     elif isinstance(exc, WorkspaceError):
