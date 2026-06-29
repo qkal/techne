@@ -7,9 +7,11 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from agent_quality_mcp.exceptions import AgentQualityMcpError, WorkspaceError
 from agent_quality_mcp.models import InspectWorkspaceRequest, ValidatePatchRequest
 from agent_quality_mcp.response import build_error_response
 from agent_quality_mcp.service import inspect_workspace_service, validate_patch_service
+from agent_quality_mcp.tool_validation import format_validation_error_summary
 
 
 def validate_patch_tool(
@@ -36,14 +38,15 @@ def validate_patch_tool(
 
     try:
         request = ValidatePatchRequest(**request_data)
-    except ValidationError:
+    except ValidationError as exc:
+        details = format_validation_error_summary(exc)
         return build_error_response(
             request_id=_safe_request_id(request_id),
             workspace_root=_safe_workspace_root(workspace_root),
             mode=_safe_optional_string(mode),
             safety_mode=_safe_optional_string(safety_mode),
             code="invalid_request",
-            message="Invalid validate_patch request",
+            message=f"Invalid validate_patch request: {details}",
         ).model_dump(mode="json")
     return validate_patch_service(request).model_dump(mode="json")
 
@@ -54,14 +57,34 @@ def inspect_workspace_tool(
 ) -> dict[str, Any]:
     """Inspect a workspace and return JSON-safe response data."""
 
-    request = InspectWorkspaceRequest(
-        workspace_root=workspace_root,
-        config_overrides=config_overrides,
-    )
-    return inspect_workspace_service(
-        request.workspace_root,
-        request.config_overrides,
-    ).model_dump(mode="json")
+    try:
+        request = InspectWorkspaceRequest(
+            workspace_root=workspace_root,
+            config_overrides=config_overrides,
+        )
+    except ValidationError as exc:
+        return _inspect_tool_error_response(
+            workspace_root=_safe_workspace_root(workspace_root),
+            code="invalid_request",
+            message=f"Invalid inspect_workspace request: {format_validation_error_summary(exc)}",
+        )
+    try:
+        return inspect_workspace_service(
+            request.workspace_root,
+            request.config_overrides,
+        ).model_dump(mode="json")
+    except WorkspaceError as exc:
+        return _inspect_tool_error_response(
+            workspace_root=_safe_workspace_root(workspace_root),
+            code="workspace_error",
+            message=str(exc),
+        )
+    except AgentQualityMcpError as exc:
+        return _inspect_tool_error_response(
+            workspace_root=_safe_workspace_root(workspace_root),
+            code="inspect_failed",
+            message=str(exc),
+        )
 
 
 def register_tools(app: Any) -> None:
@@ -69,6 +92,39 @@ def register_tools(app: Any) -> None:
 
     app.tool(name="validate_patch")(validate_patch_tool)
     app.tool(name="inspect_workspace")(inspect_workspace_tool)
+
+
+def _inspect_tool_error_response(
+    *,
+    workspace_root: str,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    from agent_quality_mcp.models import AgentQualityConfig
+
+    return {
+        "workspace_root": workspace_root,
+        "config": AgentQualityConfig().model_dump(mode="json"),
+        "command_availability": {
+            "uv": False,
+            "ruff": False,
+            "pyright": False,
+            "pyright-langserver": False,
+        },
+        "resolved_command_paths": {
+            "uv": None,
+            "ruff": None,
+            "pyright": None,
+            "pyright-langserver": None,
+        },
+        "default_limits": {},
+        "python_file_count": 0,
+        "config_files": [],
+        "excluded_directories": [],
+        "security_decisions": [f"inspect_workspace failed: {code}"],
+        "config_valid": False,
+        "config_issue": message,
+    }
 
 
 def _safe_request_id(value: object) -> str:

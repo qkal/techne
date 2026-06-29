@@ -232,3 +232,51 @@ def test_inspect_workspace_tool_returns_resolved_workspace_json(tmp_path: Path) 
     assert result["workspace_root"] == str(tmp_path.resolve())
     assert result["python_file_count"] == 1
     assert isinstance(result["config"], dict)
+    assert result["config_valid"] is True
+
+
+def test_validate_patch_tool_includes_field_details_for_invalid_request(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    def fail_if_called(request: ValidatePatchRequest) -> ValidatePatchResponse:
+        raise AssertionError("invalid requests should not reach the service")
+
+    monkeypatch.setattr(tools_module, "validate_patch_service", fail_if_called)
+
+    result = validate_patch_tool(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        mode="not-a-mode",
+        request_id="req-invalid",
+    )
+
+    assert result["decision"] == "reject_request"
+    assert "mode:" in result["summary"]["detail"]
+
+
+def test_inspect_workspace_tool_returns_structured_error_for_invalid_request(
+    monkeypatch: Any,
+) -> None:
+    def fail_if_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("invalid requests should not reach the service")
+
+    monkeypatch.setattr(tools_module, "inspect_workspace_service", fail_if_called)
+
+    result = inspect_workspace_tool(
+        workspace_root=123,  # type: ignore[arg-type]
+    )
+
+    assert result["config_valid"] is False
+    assert result["python_file_count"] == 0
+    assert "workspace_root" in result["config_issue"]
+
+
+def test_inspect_workspace_tool_returns_structured_error_for_missing_workspace() -> None:
+    result = inspect_workspace_tool(workspace_root="/path/that/does/not/exist")
+
+    assert result["config_valid"] is False
+    assert result["python_file_count"] == 0
+    assert result["security_decisions"][0].startswith("inspect_workspace failed:")
