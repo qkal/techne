@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -10,11 +9,8 @@ from pathlib import Path
 from types import TracebackType
 
 from agent_quality_mcp.exceptions import ResourceLimitError, SecurityError
-from agent_quality_mcp.models import (
-    DEFAULT_SECRET_FILE_PATTERNS,
-    DEFAULT_WORKSPACE_EXCLUSIONS,
-    AgentQualityConfig,
-)
+from agent_quality_mcp.exclusions import is_workspace_path_excluded
+from agent_quality_mcp.models import AgentQualityConfig
 
 
 @dataclass
@@ -62,24 +58,11 @@ class ShadowWorkspaceContext:
             shutil.rmtree(self._temporary_root)
 
 
-def _matches_secret_pattern(path: Path, config: AgentQualityConfig) -> bool:
-    patterns = (*DEFAULT_SECRET_FILE_PATTERNS, *tuple(config.secret_file_patterns))
-    return any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
-
-
-def _is_excluded(path: Path, root: Path, config: AgentQualityConfig) -> bool:
-    relative = path.relative_to(root)
-    exclusions = {*DEFAULT_WORKSPACE_EXCLUSIONS, *config.workspace_exclusions}
-    if any(part in exclusions for part in relative.parts):
-        return True
-    return path.is_file() and _matches_secret_pattern(path, config)
-
-
 def _copy_workspace(source_root: Path, shadow_root: Path, config: AgentQualityConfig) -> None:
     copied_bytes = 0
     shadow_root.mkdir(parents=True, exist_ok=True)
     for source in source_root.rglob("*"):
-        if _is_excluded(source, source_root, config):
+        if is_workspace_path_excluded(source, source_root, config):
             continue
         relative = source.relative_to(source_root)
         target = shadow_root / relative
