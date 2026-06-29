@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2.0",
+  "pytest-cov>=5.0.0",
   "ruff>=0.5.0",
   "pyright>=1.1.0",
 ]
@@ -41,6 +42,15 @@ extend-exclude = ["tests/fixtures/demo_repo"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S"]
 ignore = ["S101"]
+
+[tool.coverage.run]
+source = ["agent_quality_mcp"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 78
 
 [tool.pyright]
 pythonVersion = "3.12"

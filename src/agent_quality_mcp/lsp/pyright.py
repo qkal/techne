@@ -9,6 +9,7 @@ import select
 import threading
 import time
 from collections import deque
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlparse
@@ -33,6 +34,25 @@ from agent_quality_mcp.validators import (
 
 RawLspDiagnostics = dict[str, list[dict[str, object]]]
 _SHADOW_CLEANUP_TIMEOUT_SECONDS = 1.0
+_LSP_DIAGNOSTIC_ERRORS = (
+    LspProtocolError,
+    OSError,
+    TimeoutError,
+    ValueError,
+    TypeError,
+    UnicodeDecodeError,
+    BrokenPipeError,
+    RuntimeError,
+    JSONDecodeError,
+)
+_LSP_CLEANUP_ERRORS = (
+    LspProtocolError,
+    OSError,
+    TimeoutError,
+    ValueError,
+    BrokenPipeError,
+    RuntimeError,
+)
 
 
 def lsp_uri_from_path(path: Path) -> str:
@@ -277,8 +297,8 @@ class PyrightLspProcessSession:
                         shadow_root_resolved,
                         deadline=deadline,
                     )
-                except Exception as exc:
-                    self._last_cleanup_error = str(exc) or exc.__class__.__name__
+                except _LSP_CLEANUP_ERRORS as exc:
+                    self._last_cleanup_error = _lsp_error_reason(exc)
 
     def _collect_diagnostics_unlocked(
         self,
@@ -333,8 +353,8 @@ class PyrightLspProcessSession:
                     return raw_by_uri, None
 
             return None, "changed-file diagnostics incomplete"
-        except Exception as exc:
-            return None, str(exc) or exc.__class__.__name__
+        except _LSP_DIAGNOSTIC_ERRORS as exc:
+            return None, _lsp_error_reason(exc)
 
     def _initialize(self, deadline: float) -> None:
         request_id = self._next_request_id()
@@ -425,8 +445,8 @@ class PyrightLspProcessSession:
         with self._request_lock:
             try:
                 self._close_shadow_root_unlocked(shadow_root.resolve(), deadline=deadline)
-            except Exception as exc:
-                self._last_cleanup_error = str(exc) or exc.__class__.__name__
+            except _LSP_CLEANUP_ERRORS as exc:
+                self._last_cleanup_error = _lsp_error_reason(exc)
 
     def is_healthy(self) -> bool:
         """Return whether the cached process is alive and cleanup state is reusable."""
@@ -459,7 +479,7 @@ class PyrightLspProcessSession:
                     },
                     deadline,
                 )
-            except Exception as exc:
+            except _LSP_CLEANUP_ERRORS as exc:
                 cleanup_errors.append(exc)
             else:
                 open_document_uris = self._open_document_uris_by_workspace_uri.get(
@@ -502,7 +522,7 @@ class PyrightLspProcessSession:
                 },
                 deadline,
             )
-        except Exception as exc:
+        except _LSP_CLEANUP_ERRORS as exc:
             cleanup_errors.append(exc)
         else:
             self._open_workspace_uris.remove(workspace_uri)
@@ -748,10 +768,18 @@ class PyrightLspProvider:
                 lsp_tool_unavailable=True,
                 discard_lsp_session=True,
             )
+        except _LSP_DIAGNOSTIC_ERRORS as exc:
+            return self._fallback(
+                request=request,
+                reason=_lsp_error_reason(exc),
+                started_at=started_at,
+                documents_opened=documents_opened,
+                discard_lsp_session=True,
+            )
         except Exception as exc:
             return self._fallback(
                 request=request,
-                reason=str(exc) or exc.__class__.__name__,
+                reason=_unexpected_lsp_error_reason(exc),
                 started_at=started_at,
                 documents_opened=documents_opened,
                 discard_lsp_session=True,
@@ -878,7 +906,7 @@ def _close_shadow_root(manager: PyrightLspManager, shadow_root: Path) -> None:
     if callable(close_shadow_root):
         try:
             close_shadow_root(shadow_root)
-        except Exception:
+        except _LSP_CLEANUP_ERRORS:
             return
 
 
@@ -914,7 +942,7 @@ def _process_is_alive(process: object) -> bool:
         return True
     try:
         return poll() is None
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 
@@ -925,7 +953,7 @@ def _close_process(process: object) -> None:
         if callable(close):
             try:
                 close()
-            except Exception as exc:
+            except (OSError, ValueError, BrokenPipeError) as exc:
                 _ignore_process_cleanup_error(exc)
 
     if not _process_is_alive(process):
@@ -935,7 +963,7 @@ def _close_process(process: object) -> None:
     if callable(terminate):
         try:
             terminate()
-        except Exception as exc:
+        except (OSError, ValueError, BrokenPipeError) as exc:
             _ignore_process_cleanup_error(exc)
     _wait_for_process_exit(process, timeout=1.0)
     if not _process_is_alive(process):
@@ -945,7 +973,7 @@ def _close_process(process: object) -> None:
     if callable(kill):
         try:
             kill()
-        except Exception as exc:
+        except (OSError, ValueError, BrokenPipeError) as exc:
             _ignore_process_cleanup_error(exc)
     _wait_for_process_exit(process, timeout=1.0)
 
@@ -956,8 +984,16 @@ def _wait_for_process_exit(process: object, *, timeout: float) -> None:
         return
     try:
         wait(timeout=timeout)
-    except Exception as exc:
+    except (OSError, ValueError, BrokenPipeError) as exc:
         _ignore_process_cleanup_error(exc)
+
+
+def _lsp_error_reason(exc: BaseException) -> str:
+    return str(exc) or exc.__class__.__name__
+
+
+def _unexpected_lsp_error_reason(exc: BaseException) -> str:
+    return f"unexpected {exc.__class__.__name__}: {_lsp_error_reason(exc)}"
 
 
 def _ignore_process_cleanup_error(exc: Exception) -> None:
