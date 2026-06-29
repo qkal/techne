@@ -289,6 +289,8 @@ class InspectWorkspaceResponse(AgentQualityBaseModel):
     config_files: list[str]
     excluded_directories: list[str]
     security_decisions: list[str]
+    config_valid: bool = True
+    config_issue: str | None = None
 
 
 def path_to_display(path: Path) -> str:
