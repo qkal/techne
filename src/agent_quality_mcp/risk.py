@@ -13,6 +13,7 @@ def compute_risk_score(
     patch_bytes: int,
     changed_file_count: int,
     missing_tools: Iterable[str],
+    max_patch_bytes: int = 200_000,
 ) -> RiskScore:
     """Compute a deterministic 0-100 risk score from validation signals."""
 
@@ -51,13 +52,13 @@ def compute_risk_score(
         score += min(15, warnings * 3)
         factors.append(f"Warnings: {warnings}")
 
-    if patch_bytes > 200_000:
+    if patch_bytes > max_patch_bytes:
         score += 20
         factors.append(f"Large patch: {patch_bytes} bytes")
-    elif patch_bytes > 50_000:
+    elif patch_bytes > max_patch_bytes // 4:
         score += 10
         factors.append(f"Moderate patch size: {patch_bytes} bytes")
-    elif patch_bytes > 10_000:
+    elif patch_bytes > max_patch_bytes // 20:
         score += 5
         factors.append(f"Elevated patch size: {patch_bytes} bytes")
 
