@@ -13,6 +13,8 @@ from agent_quality_mcp.lsp.pyright import (
     PyrightLspProcessSession,
     PyrightLspProvider,
     RealPyrightLspManager,
+    _lsp_error_reason,
+    _unexpected_lsp_error_reason,
     lsp_uri_from_path,
     normalize_lsp_diagnostics,
     path_from_lsp_uri,
@@ -1402,3 +1404,11 @@ def test_normalize_lsp_diagnostics_sanitizes_unserializable_text(
     assert diagnostic.message == "Pyright diagnostic"
     assert diagnostic.id.startswith("pyright-lsp-")
     diagnostic.model_dump_json()
+
+
+def test_lsp_error_helpers_label_unexpected_failures() -> None:
+    assert _lsp_error_reason(TimeoutError("timed out")) == "timed out"
+    assert (
+        _unexpected_lsp_error_reason(RuntimeError("boom"))
+        == "unexpected RuntimeError: boom"
+    )

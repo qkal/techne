@@ -37,7 +37,7 @@ jobs:
         run: uv run pyright --pythonpath .venv/bin/python
 
       - name: Test
-        run: uv run pytest -v
+        run: uv run pytest -v --cov=agent_quality_mcp --cov-report=term-missing
 
       - name: Check whitespace
         run: git diff --check
