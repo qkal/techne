@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from pydantic import ValidationError
+
+from agent_quality_mcp.models import ValidatePatchRequest
 from agent_quality_mcp.tool_validation import (
     format_validation_error_summary,
     sanitize_config_issue_message,
 )
-from pydantic import ValidationError
 
 
-def test_format_validation_error_summary_lists_field_locations() -> None:
+def test_format_validation_error_summary_lists_field_locations(tmp_path: Path) -> None:
     try:
-        from agent_quality_mcp.models import ValidatePatchRequest
-
-        ValidatePatchRequest(
-            workspace_root="/tmp",
-            changed_files=[],
-            mode="not-a-mode",
+        ValidatePatchRequest.model_validate(
+            {
+                "workspace_root": str(tmp_path),
+                "changed_files": [],
+                "mode": "not-a-mode",
+            }
         )
     except ValidationError as exc:
         summary = format_validation_error_summary(exc)
