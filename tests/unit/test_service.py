@@ -1082,3 +1082,67 @@ def test_inspect_workspace_sanitizes_accepted_config_string_lists(
     assert response.config.secret_redaction_patterns == []
     assert response.excluded_directories != [raw_value]
     assert raw_value not in serialized
+
+
+def test_validate_patch_returns_structured_response_for_unexpected_errors(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    def exploding_shadow(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("shadow copy exploded")
+
+    monkeypatch.setattr(service_module, "create_shadow_workspace", exploding_shadow)
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        mode=ValidationMode.QUICK,
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.decision == "request_human_review"
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is False
+    assert response.blockers
+    serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
+    assert "shadow copy exploded" not in serialized
+
+
+def test_validate_patch_survives_unexpected_adapter_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    _write_python_file(tmp_path)
+
+    class ExplodingRuffAdapter(CleanRuffAdapter):
+        def check(
+            self,
+            cwd: Path,
+            changed_files: list[Path],
+            mode: str,
+            preview_safe_fixes: bool = False,
+        ) -> tuple[list[Diagnostic], list[CommandExecutionRecord], list[SafeFixPreview]]:
+            raise RuntimeError("ruff adapter exploded")
+
+    monkeypatch.setattr(service_module, "UvAdapter", CleanUvAdapter)
+    monkeypatch.setattr(service_module, "RuffAdapter", ExplodingRuffAdapter)
+    monkeypatch.setattr(
+        service_module,
+        "_build_pyright_provider",
+        lambda runner: CleanPyrightProvider(),
+    )
+    request = ValidatePatchRequest(
+        workspace_root=str(tmp_path),
+        changed_files=["pkg/app.py"],
+        mode=ValidationMode.QUICK,
+    )
+
+    response = validate_patch_service(request)
+
+    assert response.evidence.real_workspace_modified is False
+    assert response.evidence.shadow_workspace_used is True
+    assert response.blockers[0].details == "ruff adapter failed unexpectedly"
+    serialized = json.dumps(response.model_dump(mode="json"), allow_nan=False)
+    assert "ruff adapter exploded" not in serialized

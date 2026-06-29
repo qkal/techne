@@ -179,10 +179,10 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
         _raise_if_timed_out(started_at, config)
         compressed, context_summary = compress_diagnostics(diagnostics, config)
         risk_score = compute_risk_score(
-            diagnostics,
+            compressed,
             patch_bytes=patch_bytes,
             changed_file_count=len(changed_files),
-            missing_tools=_missing_tools(diagnostics),
+            missing_tools=_missing_tools(compressed),
         )
         return _response_from_parts(
             request=request,
@@ -229,6 +229,33 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
     except AgentQualityMcpError as exc:
         diagnostic = _exception_diagnostic(exc)
         _record_error_decision(audit, exc)
+        return _final_response(
+            request=request,
+            workspace_root=resolved_root_text,
+            status=ResponseStatus.ERROR,
+            diagnostics=[diagnostic],
+            safe_fixes=[],
+            config=active_config,
+            audit_summary=audit.summary(),
+            started_at=started_at,
+            shadow_workspace_used=shadow_workspace_used,
+            shadow_workspace_path=shadow_workspace_path,
+            shadow_workspace_preserved=shadow_workspace_preserved,
+            commands=commands,
+            timed_out=False,
+            patch_bytes=patch_bytes,
+            changed_file_count=len(request.changed_files),
+        )
+    except Exception as exc:
+        audit.permission(f"Unexpected validation failure: {type(exc).__name__}")
+        diagnostic = diagnostic_from_message(
+            source="system",
+            code="internal_error",
+            message="Validation failed due to an unexpected internal error",
+            severity=DiagnosticSeverity.BLOCKER,
+            is_blocking=True,
+            metadata={"error_type": type(exc).__name__},
+        )
         return _final_response(
             request=request,
             workspace_root=resolved_root_text,
@@ -455,6 +482,8 @@ def _adapter_call(tool: str, call: Callable[[], tuple], fallback_empty: tuple) -
         return ([_tool_diagnostic(tool, exc)], *fallback_empty)
     except CommandExecutionError as exc:
         return ([_command_warning(tool, exc)], *fallback_empty)
+    except Exception as exc:
+        return ([_unexpected_adapter_error(tool, exc)], *fallback_empty)
 
 
 def _validate_request_limits(
@@ -659,6 +688,17 @@ def _command_warning(tool: str, exc: CommandExecutionError) -> Diagnostic:
         severity=DiagnosticSeverity.WARNING,
         is_blocking=False,
         metadata={"tool": tool},
+    )
+
+
+def _unexpected_adapter_error(tool: str, exc: Exception) -> Diagnostic:
+    return diagnostic_from_message(
+        source="system",
+        code="adapter_internal_error",
+        message=f"{tool} adapter failed unexpectedly",
+        severity=DiagnosticSeverity.WARNING,
+        is_blocking=False,
+        metadata={"tool": tool, "error_type": type(exc).__name__},
     )
 
 
