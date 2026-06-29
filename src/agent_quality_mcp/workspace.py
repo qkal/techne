@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_quality_mcp.exclusions import is_workspace_path_excluded
 from agent_quality_mcp.models import AgentQualityConfig
 
 
@@ -16,11 +17,6 @@ class WorkspaceFileInspection:
     config_files: list[str]
 
 
-def _is_excluded(path: Path, root: Path, config: AgentQualityConfig) -> bool:
-    relative = path.relative_to(root)
-    return any(part in set(config.workspace_exclusions) for part in relative.parts)
-
-
 def inspect_workspace_files(root: Path, config: AgentQualityConfig) -> WorkspaceFileInspection:
     """Count Python files and config files without reading source contents."""
 
@@ -28,7 +24,7 @@ def inspect_workspace_files(root: Path, config: AgentQualityConfig) -> Workspace
     config_files: list[str] = []
     config_names = {"pyproject.toml", "ruff.toml", ".ruff.toml", "pyrightconfig.json"}
     for path in root.rglob("*"):
-        if _is_excluded(path, root, config):
+        if is_workspace_path_excluded(path, root, config):
             continue
         if path.is_file() and path.suffix == ".py":
             python_count += 1

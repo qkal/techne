@@ -76,30 +76,13 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
     resolved_root_text = request.workspace_root
 
     if request.safety_mode == SafetyMode.APPLY_SAFE_FIXES:
-        audit.permission("Denied apply_safe_fixes because real workspace mutation is unsupported")
-        diagnostic = diagnostic_from_message(
-            source="security",
-            code="apply_safe_fixes_not_supported",
-            message="apply_safe_fixes is not supported; validation is read-only",
-            severity=DiagnosticSeverity.BLOCKER,
-            is_blocking=True,
-        )
-        return _final_response(
+        return _reject_apply_safe_fixes(
             request=request,
             workspace_root=resolved_root_text,
-            status=ResponseStatus.ERROR,
-            diagnostics=[diagnostic],
-            safe_fixes=[],
             config=safe_config,
-            audit_summary=audit.summary(),
+            audit=audit,
             started_at=started_at,
-            shadow_workspace_used=False,
-            shadow_workspace_path=None,
-            shadow_workspace_preserved=False,
-            commands=[],
-            timed_out=False,
             patch_bytes=patch_bytes,
-            changed_file_count=len(request.changed_files),
         )
 
     active_config = safe_config
@@ -113,32 +96,13 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
         effective_mode = request.mode or config.default_mode
         effective_safety_mode = request.safety_mode or config.default_safety_mode
         if effective_safety_mode == SafetyMode.APPLY_SAFE_FIXES:
-            audit.permission(
-                "Denied apply_safe_fixes because real workspace mutation is unsupported"
-            )
-            diagnostic = diagnostic_from_message(
-                source="security",
-                code="apply_safe_fixes_not_supported",
-                message="apply_safe_fixes is not supported; validation is read-only",
-                severity=DiagnosticSeverity.BLOCKER,
-                is_blocking=True,
-            )
-            return _final_response(
+            return _reject_apply_safe_fixes(
                 request=request,
                 workspace_root=resolved_root_text,
-                status=ResponseStatus.ERROR,
-                diagnostics=[diagnostic],
-                safe_fixes=[],
                 config=config,
-                audit_summary=audit.summary(),
+                audit=audit,
                 started_at=started_at,
-                shadow_workspace_used=False,
-                shadow_workspace_path=None,
-                shadow_workspace_preserved=False,
-                commands=[],
-                timed_out=False,
                 patch_bytes=patch_bytes,
-                changed_file_count=len(request.changed_files),
             )
         audit.permission("Validation will run in a shadow workspace only")
         _raise_if_timed_out(started_at, config)
@@ -184,6 +148,7 @@ def validate_patch_service(request: ValidatePatchRequest) -> ValidatePatchRespon
             patch_bytes=patch_bytes,
             changed_file_count=len(changed_files),
             missing_tools=_missing_tools(compressed),
+            max_patch_bytes=config.max_patch_bytes,
         )
         return _response_from_parts(
             request=request,
@@ -317,6 +282,42 @@ def inspect_workspace_service(
         security_decisions=security_decisions,
         config_valid=config_valid,
         config_issue=config_issue,
+    )
+
+
+def _reject_apply_safe_fixes(
+    *,
+    request: ValidatePatchRequest,
+    workspace_root: str,
+    config: AgentQualityConfig,
+    audit: AuditRecorder,
+    started_at: float,
+    patch_bytes: int,
+) -> ValidatePatchResponse:
+    audit.permission("Denied apply_safe_fixes because real workspace mutation is unsupported")
+    diagnostic = diagnostic_from_message(
+        source="security",
+        code="apply_safe_fixes_not_supported",
+        message="apply_safe_fixes is not supported; validation is read-only",
+        severity=DiagnosticSeverity.BLOCKER,
+        is_blocking=True,
+    )
+    return _final_response(
+        request=request,
+        workspace_root=workspace_root,
+        status=ResponseStatus.ERROR,
+        diagnostics=[diagnostic],
+        safe_fixes=[],
+        config=config,
+        audit_summary=audit.summary(),
+        started_at=started_at,
+        shadow_workspace_used=False,
+        shadow_workspace_path=None,
+        shadow_workspace_preserved=False,
+        commands=[],
+        timed_out=False,
+        patch_bytes=patch_bytes,
+        changed_file_count=len(request.changed_files),
     )
 
 
@@ -547,6 +548,7 @@ def _final_response(
         patch_bytes=patch_bytes,
         changed_file_count=changed_file_count,
         missing_tools=_missing_tools(compressed),
+        max_patch_bytes=config.max_patch_bytes,
     )
     if status == ResponseStatus.ERROR and risk_score.score < 100:
         risk_score = RiskScore(
