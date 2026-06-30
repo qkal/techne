@@ -23,7 +23,16 @@ def validate_patch_tool(
     request_id: str | None = None,
     config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate a proposed patch and return JSON-safe response data."""
+    """Validate a proposed patch in an isolated shadow workspace and return
+    an agent decision contract.
+
+    Never mutates workspace_root: validation always runs against a
+    temporary copy. Runs uv, Ruff, and Pyright, then returns a response
+    whose top-level `decision` field (apply_patch / revise_patch /
+    fix_tooling / request_human_review / reject_request) tells the caller
+    what to do next; `blockers`, `next_actions`, `fix_plan`, and `evidence`
+    explain why.
+    """
 
     request_data: dict[str, Any] = {
         "workspace_root": workspace_root,
@@ -55,7 +64,12 @@ def inspect_workspace_tool(
     workspace_root: str,
     config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Inspect a workspace and return JSON-safe response data."""
+    """Return safe workspace metadata (tool availability, file counts,
+    discovered config files) without reading or returning source contents.
+
+    Does not run uv, Ruff, or Pyright and does not validate a patch; use
+    validate_patch for that.
+    """
 
     try:
         request = InspectWorkspaceRequest(

@@ -1,4 +1,5 @@
-docs/
+docs/*
+!docs/superpowers/
 .worktrees/
 __pycache__/
 *.py[cod]

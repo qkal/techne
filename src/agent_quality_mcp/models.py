@@ -151,13 +151,63 @@ class AgentQualityConfig(AgentQualityBaseModel):
 class ValidatePatchRequest(AgentQualityBaseModel):
     """Input accepted by the validate_patch MCP tool."""
 
-    workspace_root: str
-    changed_files: list[str]
-    patch_unified_diff: str | None = None
-    mode: ValidationMode | None = None
-    safety_mode: SafetyMode | None = None
-    request_id: str = Field(default_factory=lambda: str(uuid4()))
-    config_overrides: dict[str, Any] | None = None
+    workspace_root: str = Field(
+        description=(
+            "Absolute path to the real workspace directory to validate against. "
+            "This directory is never modified; validation runs in an isolated "
+            "shadow copy."
+        )
+    )
+    changed_files: list[str] = Field(
+        description=(
+            "Non-empty list of relative file paths the patch is allowed to "
+            "touch. Required even if patch_unified_diff is omitted."
+        )
+    )
+    patch_unified_diff: str | None = Field(
+        default=None,
+        description=(
+            "Optional text unified diff to apply inside the shadow workspace "
+            "before running checks. When present, patch targets must exactly "
+            "match changed_files. Binary patches, renames, copies, and file "
+            "mode changes are rejected."
+        ),
+    )
+    mode: ValidationMode | None = Field(
+        default=None,
+        description=(
+            "Validation depth: 'quick' (changed files only, fastest, reduced "
+            "confidence), 'standard' (default; full shadow-workspace checks), "
+            "or 'strict' (broadest checks, strictest routing to "
+            "request_human_review when incomplete). Defaults to server "
+            "configuration when omitted."
+        ),
+    )
+    safety_mode: SafetyMode | None = Field(
+        default=None,
+        description=(
+            "Permission mode: 'read_only' (default; no fixes), "
+            "'preview_safe_fixes' (returns redacted fix previews without "
+            "mutating anything), or 'apply_safe_fixes' (always rejected -- "
+            "real-workspace mutation is not supported). Defaults to server "
+            "configuration when omitted."
+        ),
+    )
+    request_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        description=(
+            "Caller-provided request identifier echoed back in the response; "
+            "generated when omitted."
+        ),
+    )
+    config_overrides: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional safe configuration overrides (for example default_mode, "
+            "workspace_exclusions). Fields that would expand authority or "
+            "resource limits are rejected; see README Configuration section."
+        ),
+    )
 
     @field_validator("changed_files")
     @classmethod
@@ -171,8 +221,13 @@ class ValidatePatchRequest(AgentQualityBaseModel):
 class InspectWorkspaceRequest(AgentQualityBaseModel):
     """Input accepted by the inspect_workspace MCP tool."""
 
-    workspace_root: str
-    config_overrides: dict[str, Any] | None = None
+    workspace_root: str = Field(
+        description="Absolute path to an existing workspace directory to inspect."
+    )
+    config_overrides: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional safe configuration overrides; same rules as validate_patch.",
+    )
 
 
 class DiagnosticRange(AgentQualityBaseModel):

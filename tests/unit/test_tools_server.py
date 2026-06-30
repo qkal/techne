@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -63,6 +64,7 @@ def test_main_closes_pyright_lsp_manager_after_server_exits(monkeypatch: Any) ->
         def run(self) -> None:
             events.append("run")
 
+    monkeypatch.setattr(sys, "argv", ["agent-quality-mcp"])
     monkeypatch.setattr(server_module, "create_app", lambda: FakeApp())
     monkeypatch.setattr(
         server_module,
