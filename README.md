@@ -2,6 +2,11 @@
 
 # Agent Quality MCP
 
+[![CI](https://github.com/qkal/techne/actions/workflows/ci.yml/badge.svg)](https://github.com/qkal/techne/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agent-quality-mcp.svg)](https://pypi.org/project/agent-quality-mcp/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
+
 Agent Quality MCP is a Python 3.12+ MCP server for validating Python workspace
 changes in temporary shadow copies. It accepts proposed file changes, applies
 text unified diffs away from the real repository, runs a small quality toolchain,
@@ -41,16 +46,45 @@ and rejects the currently unsupported `apply_safe_fixes` safety mode.
 
 ## Setup
 
-Install dependencies with uv:
+Install the published package with uv:
+
+```bash
+uv tool install agent-quality-mcp
+```
+
+`ruff` and `pyright` are bundled as runtime dependencies, so this produces a
+fully working server with no separate toolchain setup. A working `uv`
+installation on `PATH` is the only external prerequisite, and the package
+requires Python 3.12 or newer.
+
+For local development from a repository checkout (running the test suite,
+linting, type checking), install the `dev` extra instead:
 
 ```bash
 uv sync --extra dev
 ```
 
-This creates the local virtual environment used by the repository. The package
-requires Python 3.12 or newer.
+## Use With An MCP Client
 
-## Start The MCP Server
+Add this to your client's MCP server configuration (Claude Desktop's
+`claude_desktop_config.json`, Cursor's `.cursor/mcp.json`, VS Code's MCP
+settings, or equivalent):
+
+```json
+{
+  "mcpServers": {
+    "agent-quality": {
+      "command": "uvx",
+      "args": ["agent-quality-mcp"]
+    }
+  }
+}
+```
+
+`uvx` resolves and runs the published PyPI package on demand without a
+separate install step.
+
+## Start The MCP Server Manually
 
 Run the stdio MCP server through uv:
 
@@ -64,7 +98,10 @@ Or run the installed console script from the synced virtual environment:
 .venv/bin/agent-quality-mcp
 ```
 
-The server registers two tools: `validate_patch` and `inspect_workspace`.
+`agent-quality-mcp --version` and `agent-quality-mcp --help` print
+information and exit immediately without starting the server; any other
+argument is rejected. With no arguments, the server registers two tools,
+`validate_patch` and `inspect_workspace`, and speaks MCP over stdio.
 
 ## Tools
 
@@ -235,10 +272,20 @@ returns a non-blocking warning diagnostic.
 
 - Text unified-diff subset only.
 - Stdio transport only.
-- Minimal uv, Ruff, and Pyright adapters.
+- Minimal uv, Ruff, and Pyright adapters. `ruff` and `pyright` are bundled
+  runtime dependencies (not external prerequisites); a working `uv`
+  installation on `PATH` is still required to launch the server itself.
 - No real-repository mutation.
 - Pyright LSP is diagnostics-only; completions, hover, code actions, import
   organization, and generic multi-language LSP support are not included.
 - No advanced patch formats such as binary patches, renames, copies, or mode
   changes.
 - No production-grade safe-fix grouping.
+
+## Contributing And Community
+
+- See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, PR
+  conventions, and the versioning/release policy.
+- See [`SECURITY.md`](SECURITY.md) to report a vulnerability privately.
+- See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+- This project is licensed under the [MIT License](LICENSE).
