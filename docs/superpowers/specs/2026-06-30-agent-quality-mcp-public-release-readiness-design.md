@@ -278,8 +278,6 @@ In scope:
 - Add an `mcp-name` ownership marker and MCP-client quickstart snippets
   (Claude Desktop, Cursor, VS Code) to the README, plus status/license/PyPI
   badges.
-- Add a minimal `Dockerfile` that bundles `uv`, `ruff`, and `pyright` so
-  external users have a zero-toolchain-setup option.
 
 Out of scope for 3a (deferred to later phases or explicitly rejected):
 
@@ -290,6 +288,11 @@ Out of scope for 3a (deferred to later phases or explicitly rejected):
   needs its own brainstorming, not bundled into release engineering.
 - HTTP/SSE transport — moved to Phase 3d because it is a capability change,
   not a release-engineering change.
+- A `Dockerfile`/container image — confirmed deferred (see Resolved
+  Decisions); moved to the Phase 3b/3c backlog as an unscheduled candidate.
+- Renaming the PyPI distribution (`agent-quality-mcp`) or the import package
+  (`agent_quality_mcp`) — only the MCP Registry namespace uses the repo name
+  (see Resolved Decisions); the published package identity is unchanged.
 
 ### Licensing And Legal
 
@@ -427,11 +430,14 @@ straight into the blocking stdio read loop. Fix in `server.py`:
   official registry's "preview" state; the implementation plan must
   re-validate field names against the live schema at
   `https://github.com/modelcontextprotocol/registry` before publishing, not
-  copy this draft blindly):
+  copy this draft blindly). Per the Resolved Decisions above, the
+  registry-facing `name` uses the GitHub repository name (`techne`), while
+  `packages[0].identifier` must stay the real published PyPI name
+  (`agent-quality-mcp`) — these are two different fields on purpose:
 
 ```json
 {
-  "name": "io.github.qkal/agent-quality-mcp",
+  "name": "io.github.qkal/techne",
   "description": "MCP server for secure, shadow-workspace Python patch quality validation (uv, Ruff, Pyright).",
   "version": "0.1.0",
   "packages": [
@@ -445,9 +451,10 @@ straight into the blocking stdio read loop. Fix in `server.py`:
 }
 ```
 
-- Add an `mcp-name: io.github.qkal/agent-quality-mcp` HTML comment near the
-  top of `README.md`, which the registry uses to verify package ownership
-  against the published PyPI README.
+- Add an `mcp-name: io.github.qkal/techne` HTML comment near the top of
+  `README.md` (matching `server.json`'s `name`, not the PyPI identifier),
+  which the registry uses to verify package ownership against the
+  published PyPI README.
 - Add a "Use with an MCP client" section to `README.md` with copy-paste
   config for at least Claude Desktop and Cursor, e.g.:
 
@@ -464,22 +471,6 @@ straight into the blocking stdio read loop. Fix in `server.py`:
 
 - Add status badges to the top of `README.md`: CI workflow status, PyPI
   version, license, and Python version support.
-
-### Containerized Option
-
-- Add a minimal `Dockerfile`:
-  - `FROM python:3.12-slim`.
-  - Install the published `agent-quality-mcp` (or `COPY . .` + editable
-    install for a repo-local build) with its now-bundled `ruff`/`pyright`.
-  - `ENTRYPOINT ["agent-quality-mcp"]`.
-  - No ports exposed (stdio transport); documented as something an MCP
-    client launches with `docker run -i --rm <image>`.
-- Add a `.github/workflows/docker-publish.yml` that builds and pushes to
-  GHCR on the same `v*` tag trigger as the PyPI release, reusing the same
-  built `dist/` wheel where practical.
-- This is explicitly optional/secondary to the PyPI path in this phase; if
-  scope needs to shrink during implementation, drop the Docker image before
-  dropping anything else in this section.
 
 ### Testing
 
@@ -526,10 +517,12 @@ straight into the blocking stdio read loop. Fix in `server.py`:
 - `release.yml` exists, is syntactically valid, requires `ci.yml`'s checks to
   pass first, and uses Trusted Publishing (no PyPI token stored as a
   secret).
-- `server.json` exists and the README carries the matching `mcp-name`
-  comment.
+- `server.json` exists with `name: io.github.qkal/techne` and
+  `packages[0].identifier: agent-quality-mcp`, and the README carries the
+  matching `mcp-name: io.github.qkal/techne` comment.
 - README has a working MCP-client quickstart snippet and at least a CI/
   license/PyPI badge row.
+- No `Dockerfile` is added in this phase.
 - Full existing test/lint/type/whitespace verification still passes
   unchanged.
 
@@ -546,22 +539,17 @@ Not fully specified yet; detailed enough to convert into its own design.
   `from agent_quality_mcp.lsp.pyright import ...` import keeps working
   unchanged. No behavior change; the win is file size, focused test
   targets, and easier review of future LSP changes.
-- Resolve the dead `wrap_uv_result`/`wrap_ruff_result` code. Two real
-  options, both legitimate, that need a decision before planning:
-  - **Delete** them and their tests (simplest, lowest risk, matches "remove
-    what's unused").
-  - **Finish wiring** `service.py`'s uv/Ruff calls through them, the way
-    Pyright already is. More invasive (touches orchestration and the
-    public `evidence`/`required_checks` shape's inputs, though not its
-    contract), but removes the dead code *and* makes uv/Ruff capability
-    metadata (scope, skip reasons, completion) available to the response
-    the same way Pyright's already is — a small power upgrade bundled with
-    the cleanup. Recommended if Phase 3d's evidence-richness goals are
-    wanted; otherwise delete.
-- Optional, lower priority: extract the shared "is this a safe scoped
-  unified diff" check out of `cli/ruff.py` so it does not conceptually
-  duplicate `patching.py`'s hunk parsing; consider splitting `service.py`'s
-  `inspect_workspace_service` path out of the `validate_patch_service` file.
+- Resolve the dead `wrap_uv_result`/`wrap_ruff_result` code. **Resolved
+  (see Resolved Decisions): delete** them and their dedicated tests in
+  `tests/unit/test_validators.py`; do not finish wiring them into
+  `service.py`. If richer uv/Ruff capability metadata is wanted later, it
+  is a fresh Phase 3d design, not a revival of this code.
+- Optional, lower priority candidates for this phase: extract the shared
+  "is this a safe scoped unified diff" check out of `cli/ruff.py` so it
+  does not conceptually duplicate `patching.py`'s hunk parsing; consider
+  splitting `service.py`'s `inspect_workspace_service` path out of the
+  `validate_patch_service` file; a `Dockerfile`/container image (deferred
+  from Phase 3a) is also a candidate to schedule here or in 3c.
 
 ## Phase 3c: Quality-Of-Life And DX (Backlog Outline)
 
@@ -595,19 +583,39 @@ Not fully specified yet; detailed enough to convert into its own design.
 - Revisit caching/memoization only if real usage shows repeated-validation
   latency is a problem; not worth designing speculatively now.
 
-## Open Questions For The Maintainer
+## Resolved Decisions (Maintainer, 2026-06-30)
 
-1. Phase 3a's packaging change (bundle `ruff`+`pyright` as core deps) grows
-   the default install. Confirmed acceptable, or is a separate `tools`
-   extras group preferred despite the friction trade-off above?
-2. Phase 3b's dead-code fork: delete `wrap_uv_result`/`wrap_ruff_result`, or
-   finish wiring them into `service.py`? This also decides whether 3b and
-   3d's "evidence richness" goal are coupled or independent.
-3. Is `io.github.qkal/agent-quality-mcp` the intended MCP Registry/PyPI
-   project name, or should it differ from the GitHub repo name (`techne`)?
-4. Should the Docker image (lowest-priority item in 3a) be kept in scope for
-   the first release, or explicitly deferred to keep the first PyPI release
-   smaller and faster to ship?
+The four open questions above were reviewed and resolved as follows. The
+rest of this document has been updated to match.
+
+1. **Packaging.** Confirmed: bundle `ruff` and `pyright` into core
+   `dependencies` as proposed (no separate `tools` extras group). A default
+   `pip install agent-quality-mcp` must produce a working server.
+2. **Dead validator-wrapper code.** Confirmed: delete
+   `wrap_uv_result`/`wrap_ruff_result` and their dedicated tests in Phase
+   3b rather than finishing the uv/Ruff capability-wrapper migration. This
+   decouples Phase 3b (pure cleanup) from Phase 3d's evidence-richness
+   goal — if richer uv/Ruff capability metadata is wanted later, it should
+   be designed as its own Phase 3d item with a fresh look at
+   `ValidatorResult.metadata`, not revived from the orphaned wrapper code.
+3. **MCP Registry / project naming.** Confirmed: use the existing GitHub
+   repository name, not the PyPI distribution name, for the registry
+   namespace. The MCP Registry `server.json` `name` field and the README's
+   `mcp-name` ownership marker use **`io.github.qkal/techne`**. This is
+   independent from the already-established PyPI distribution name
+   `agent-quality-mcp` (console script, import package `agent_quality_mcp`,
+   and `pyproject.toml` `[project].name` are unchanged) — the registry's
+   `packages[0].identifier` must keep pointing at the real published PyPI
+   name (`agent-quality-mcp`) for the registry's ownership verification to
+   succeed; only the human-facing namespace `name` field changes to
+   `io.github.qkal/techne`. Renaming the PyPI distribution itself was not
+   requested and is treated as explicitly out of scope — it is a much more
+   disruptive, effectively irreversible change (PyPI names cannot be safely
+   reused once released) that would need its own dedicated confirmation if
+   ever wanted.
+4. **Docker image.** Confirmed: deferred out of Phase 3a entirely. Moved to
+   the Phase 3b/3c backlog as a candidate, not committed to any specific
+   later phase yet.
 
 ## Self-Review Notes
 
