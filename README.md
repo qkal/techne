@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.qkal/techne -->
+
 # Agent Quality MCP
 
 Agent Quality MCP is a Python 3.12+ MCP server for validating Python workspace

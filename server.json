@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.qkal/techne",
+  "description": "MCP server for secure, shadow-workspace Python patch quality validation (uv, Ruff, Pyright).",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/qkal/techne",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/qkal/techne",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "agent-quality-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
