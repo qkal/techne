@@ -220,19 +220,22 @@ validation logic goes first:
    validation/decision pipeline. Lowest risk, highest "actually usable by
    external people" leverage, and directly answers the most emphatic clause
    in the request ("make sure it's really gonna work as a public release").
-2. **Phase 3b — Maintainability Refactor** (backlog below). Pure internal
-   restructuring (split `lsp/pyright.py`, resolve the dead validator-wrapper
-   code, optional dedup of diff-validation helpers). No public behavior
-   change, but touches code with concurrency and subprocess lifecycle, so it
-   needs its own careful plan and full regression run.
-3. **Phase 3c — Quality-of-Life And DX** (backlog below). Schema
-   self-description, logging configuration, README/quickstart polish that
-   is not already folded into 3a.
-4. **Phase 3d — Power And Performance** (backlog below). Parallel validator
-   execution, optional HTTP transport, finishing the uv/Ruff capability
-   migration's evidence richness. Higher risk (touches timeout accounting
-   and orchestration), so it should land after 3a/3b prove out the
-   lower-risk changes.
+2. **Phase 3b — Maintainability Refactor** (fully specified in its own
+   document, see below). Pure internal restructuring (split
+   `lsp/pyright.py`, resolve the dead validator-wrapper code, optional
+   dedup of diff-validation helpers). No public behavior change, but
+   touches code with concurrency and subprocess lifecycle, so it needs its
+   own careful plan and full regression run.
+3. **Phase 3c — Quality-of-Life And DX** (fully specified in its own
+   document, see below). Observability, CLI diagnostics commands, a
+   self-documenting diagnostics reference, and richer `inspect_workspace`
+   metadata that is not already folded into 3a.
+4. **Phase 3d — Power And Performance** (fully specified in its own
+   document, see below). Parallel validator execution, an opt-in HTTP
+   transport with mandatory auth, and scoped project-layout detection.
+   Higher risk (touches timeout accounting, orchestration, and network
+   exposure), so it should land after 3a/3b prove out the lower-risk
+   changes.
 
 **Option C — Skip release engineering, focus only on code-level QoL/power
 improvements now.**
@@ -526,62 +529,48 @@ straight into the blocking stdio read loop. Fix in `server.py`:
 - Full existing test/lint/type/whitespace verification still passes
   unchanged.
 
-## Phase 3b: Maintainability Refactor (Backlog Outline)
+## Phase 3b: Maintainability Refactor
 
-Not fully specified yet; detailed enough to convert into its own design.
+Fully specified in
+[`2026-06-30-agent-quality-mcp-maintainability-refactor-design.md`](2026-06-30-agent-quality-mcp-maintainability-refactor-design.md),
+written after this roadmap's initial backlog outline and after the
+maintainer asked for full designs of the remaining phases. Summary: split
+`lsp/pyright.py` into a `lsp/pyright/` subpackage along its five existing
+concerns, delete the dead `wrap_uv_result`/`wrap_ruff_result` code per the
+Resolved Decision above, extract `inspect_workspace_service` out of
+`service.py`, deduplicate the safe-diff-preview validator out of
+`cli/ruff.py`, and add a scoped cyclomatic-complexity lint gate plus a
+file-length CI guardrail so the next oversized file cannot form silently.
 
-- Convert `src/agent_quality_mcp/lsp/pyright.py` into a `lsp/pyright/`
-  package: `diagnostics.py` (URI/range/severity normalization),
-  `session.py` (`PyrightLspProcessSession` and the raw non-blocking
-  stdin/stdout helpers), `provider.py` (`PyrightLspProvider` + fallback),
-  `manager.py` (`RealPyrightLspManager` + process lifecycle), `__init__.py`
-  re-exporting the current public symbols so every existing
-  `from agent_quality_mcp.lsp.pyright import ...` import keeps working
-  unchanged. No behavior change; the win is file size, focused test
-  targets, and easier review of future LSP changes.
-- Resolve the dead `wrap_uv_result`/`wrap_ruff_result` code. **Resolved
-  (see Resolved Decisions): delete** them and their dedicated tests in
-  `tests/unit/test_validators.py`; do not finish wiring them into
-  `service.py`. If richer uv/Ruff capability metadata is wanted later, it
-  is a fresh Phase 3d design, not a revival of this code.
-- Optional, lower priority candidates for this phase: extract the shared
-  "is this a safe scoped unified diff" check out of `cli/ruff.py` so it
-  does not conceptually duplicate `patching.py`'s hunk parsing; consider
-  splitting `service.py`'s `inspect_workspace_service` path out of the
-  `validate_patch_service` file; a `Dockerfile`/container image (deferred
-  from Phase 3a) is also a candidate to schedule here or in 3c.
+## Phase 3c: Quality-Of-Life And DX
 
-## Phase 3c: Quality-Of-Life And DX (Backlog Outline)
+Fully specified in
+[`2026-06-30-agent-quality-mcp-quality-of-life-dx-design.md`](2026-06-30-agent-quality-mcp-quality-of-life-dx-design.md).
+Summary: audit logging is verified completely inert by default today (no
+handler, default `WARNING` level silently drops every existing `INFO`-level
+audit event) and gets an opt-in `AGENT_QUALITY_MCP_LOG_LEVEL` fix; three new
+CLI diagnostics flags (`--check-tools`, `--selftest` against the existing
+demo fixture, `--print-schema`); a self-documenting, test-enforced
+diagnostics/decision reference table in the README; richer
+`inspect_workspace` metadata listing supported `config_overrides`; broader
+MCP-client quickstart coverage; and an explicit, deliberately unanswered
+decision process for whether to add new validator tools.
 
-- Document and wire a log-level/destination control
-  (e.g. `AGENT_QUALITY_MCP_LOG_LEVEL`) for the existing `audit` logger.
-- Decide whether additional validators (mypy, bandit/pip-audit, import
-  sorters) are wanted at all — this is a product question for the
-  maintainer, not something to default into a plan. If yes, it is a new
-  brainstorming round of its own (which tools, why, what "required" means
-  per mode) before any implementation.
-- Consider a `docs` site (e.g. GitHub Pages from the README) once the
-  README quickstart from 3a is in place, if discoverability data suggests
-  it is needed.
+## Phase 3d: Power And Performance
 
-## Phase 3d: Power And Performance (Backlog Outline)
-
-- Parallelize `uv`/Ruff/Pyright execution in `_run_adapters`. The original
-  Pyright-LSP spec's deferral reasons (shared timeout accounting, LSP
-  lifecycle cleanup ordering, deterministic command ordering for the
-  response) still apply and must be designed for explicitly, not waved
-  away — likely a bounded thread pool with per-tool timeout budgets that
-  still sum to the existing `request_timeout_seconds`, and deterministic
-  re-sorting of `commands`/`diagnostics` after the parallel calls return so
-  response ordering stays stable for snapshot-style tests.
-- Add an opt-in `streamable-http`/`sse` transport using the SDK capability
-  that already exists (`FastMCP.run(transport=...)`), gated behind an
-  explicit CLI flag/env var, with its own auth/network-exposure
-  considerations spelled out before implementation (this is the one item
-  in the whole roadmap that meaningfully changes the security posture, so
-  it deserves its own focused design once reached).
-- Revisit caching/memoization only if real usage shows repeated-validation
-  latency is a problem; not worth designing speculatively now.
+Fully specified in
+[`2026-06-30-agent-quality-mcp-power-performance-design.md`](2026-06-30-agent-quality-mcp-power-performance-design.md).
+Summary: parallelize the `uv`/Ruff/Pyright validator calls within one
+request using a bounded thread pool with shared-deadline timeout accounting
+and deterministic post-hoc reordering of `commands`/`diagnostics` (directly
+answering the original Pyright-LSP spec's deferral reasons rather than
+ignoring them); an opt-in `streamable-http` transport that fails closed
+without a mandatory bearer token (`AGENT_QUALITY_MCP_HTTP_BEARER_TOKEN`)
+and explicit `allowed_hosts`/`allowed_origins`; a narrow, informational-only
+Python project-layout detection in `inspect_workspace`; and an explicit,
+reasoned decision not to build response caching or incremental shadow-copy
+mechanisms in this phase, with the safety concerns that rule them out today
+recorded so they are not silently re-proposed later.
 
 ## Resolved Decisions (Maintainer, 2026-06-30)
 
@@ -619,20 +608,21 @@ rest of this document has been updated to match.
 
 ## Self-Review Notes
 
-- Placeholder scan: no `TODO`/`TBD` left in Phase 3a; every Phase
-  3b/3c/3d bullet is explicitly labeled "backlog outline," not presented as
-  a finished design, so it cannot be mistaken for implementation-ready
-  detail.
+- Placeholder scan: no `TODO`/`TBD` left in Phase 3a; Phases 3b/3c/3d were
+  initially backlog outlines and are now each fully specified in their own
+  linked documents (see each phase's section above), so this roadmap
+  document itself stays a navigable index plus Phase 3a's full detail
+  rather than duplicating three other full specs inline.
 - Consistency: Phase 3a's scope explicitly excludes any change to the
   decision/response contract (its only functional changes are the
-  dependency move and the CLI argument fix, both called out as such), Phase
-  3b's LSP-split bullet explicitly says "no behavior change" only for that
-  one item, and Phase 3d explicitly flags the one item (HTTP transport)
-  that does touch the security posture. None of these scoped claims are
-  contradicted elsewhere in this document.
-- Scope: this document is intentionally one fully-specified phase (3a) plus
-  three backlog outlines, not four full specs, to stay within "focused
-  enough for a single implementation plan" for the part that is meant to be
-  implemented next.
+  dependency move and the CLI argument fix, both called out as such); the
+  linked Phase 3b/3c/3d specs each carry their own scope and consistency
+  self-review and do not contradict this document's Resolved Decisions
+  (the dead-code deletion choice and the MCP Registry naming choice are
+  referenced, not re-decided, in the Phase 3b and other specs).
+- Scope: this document is the roadmap and Phase 3a's full spec; Phase
+  3b/3c/3d are each their own focused spec file, matching this repository's
+  existing one-spec-per-phase convention, rather than one increasingly long
+  combined document.
 - Every finding above states how it was verified (command run, file read,
   or both) rather than asserted from assumption.
